@@ -42,7 +42,7 @@ contract HookPermissionsTest is Test {
         assertFalse(ARC_HOOK_1.has(HookPermissions.BEFORE_SWAP_RETURNS_DELTA));
     }
 
-    /// The whole point: a normal hook must cost nothing, or 95% of Arc is flagged.
+    /// The whole point: a normal hook must cost nothing, or 91% of Arc is flagged.
     function test_normalHookIsNotDangerous() public pure {
         assertFalse(ARC_HOOK_2.canInterceptSwap());
         assertTrue(ARC_HOOK_2.takesSwapFee()); // it does take a cut — that is fine

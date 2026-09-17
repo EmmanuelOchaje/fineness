@@ -11,11 +11,15 @@ pragma solidity ^0.8.26;
  *
  * Why this replaces the usual "is the LP burned" check:
  *
- *   On Arc, 95% of pools carry a hook, and a survey of 4,156 live pools found
- *   3,823 DISTINCT hook addresses across 3,965 hooked pools — a fresh hook per
+ *   On Arc, 91% of pools carry a hook, and a survey of 130,462 live pools found
+ *   112,149 DISTINCT hook addresses across 118,650 hooked pools — nearly one per
  *   pool. So hook *presence* flags essentially the whole chain and proves
- *   nothing, and an address allowlist is impossible because addresses are never
- *   reused. The permissions are where the signal is.
+ *   nothing, and an address allowlist is impractical at that cardinality. The
+ *   permissions are where the signal is.
+ *
+ *   A minority of hooks ARE reused across many pools, so address-level
+ *   reputation is a viable future addition for those — but it cannot be the
+ *   primary mechanism.
  *
  * Mirrors shared/src/hooks.ts. Both are unit-tested against the same real
  * mainnet addresses; if you change one, change the other.
@@ -40,13 +44,13 @@ library HookPermissions {
     uint8 internal constant BEFORE_INITIALIZE = 13;
 
     /**
-     * The Arc ecosystem baseline, measured across 4,156 pools on 2026-09-17:
+     * The Arc ecosystem baseline, measured across 130,462 pools on 2026-09-17:
      *
      *   0x2044 = BEFORE_INITIALIZE | AFTER_SWAP | AFTER_SWAP_RETURNS_DELTA
      *
      * A hook taking a cut of every swap — the standard launchpad pattern,
      * consistent with aka.fun's documented trading fee. This is NORMAL and must
-     * not cost score, or 95% of the chain gets flagged and the mark means
+     * not cost score, or 91% of the chain gets flagged and the mark means
      * nothing.
      *
      * WARNING: empirical, not canonical. Four days into a chain's life. A second

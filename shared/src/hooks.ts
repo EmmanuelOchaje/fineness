@@ -8,8 +8,8 @@
  * contract can only be deployed at an address whose low bits match the callbacks
  * it implements — that is why v4 hook addresses look mined.
  *
- * On Arc this matters more than anywhere else: 95% of pools carry a hook and
- * there are 3,823 distinct hook addresses across 3,965 hooked pools — a fresh
+ * On Arc this matters more than anywhere else: 91% of pools carry a hook and
+ * there are 112,149 distinct hook addresses across 118,650 hooked pools — a fresh
  * hook per pool. So hook PRESENCE flags essentially the whole chain and proves
  * nothing, and address allowlisting is impossible because addresses are never
  * reused. The permissions are the signal.
@@ -42,13 +42,13 @@ export type HookFlagName = keyof typeof HOOK_FLAGS;
 export const HOOK_PERMISSION_MASK = 0x3fff;
 
 /**
- * The Arc ecosystem baseline, measured across 4,156 live pools on 2026-09-17.
+ * The Arc ecosystem baseline, measured across 130,462 live pools on 2026-09-17.
  *
  *   0x2044 = BEFORE_INITIALIZE | AFTER_SWAP | AFTER_SWAP_RETURNS_DELTA
  *
  * That is a hook taking a cut of every swap — the standard launchpad pattern,
  * consistent with aka.fun's documented trading fee. It is NORMAL. A pool
- * matching this baseline must not lose score for it, or 95% of the chain gets
+ * matching this baseline must not lose score for it, or 91% of the chain gets
  * flagged and the mark becomes meaningless.
  *
  * ⚠️ This is an empirical observation from a chain days old, not a spec. If a
@@ -62,6 +62,13 @@ export const ARC_BASELINE_PERMISSIONS = 0x2044;
  * sell outright, or re-price it arbitrarily. The Arc baseline does NOT carry
  * these. A hook that does, when the ecosystem norm does not, is the strongest
  * deterministic honeypot signal available on v4.
+ */
+/**
+ * Measured at full scale: 6,392 pools (~5.4% of hooked pools) carry BEFORE_SWAP.
+ * That is a large population with legitimate uses (limit orders, dynamic
+ * pricing), so this is a heavy risk signal, NOT proof of a honeypot. The
+ * behavioural round trip is the proof. Treating 5% of a chain as guilty would
+ * repeat the mistake this check exists to avoid.
  */
 export const DANGEROUS_FLAGS: HookFlagName[] = [
   'BEFORE_SWAP',

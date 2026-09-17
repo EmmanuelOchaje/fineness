@@ -37,7 +37,7 @@ export const arc = defineChain({
  * changes what balanceOf() returns here. That is how the Simulator is funded.
  *
  * This is also the address that appears in Uniswap v4 PoolKeys — NOT
- * address(0), despite USDC being the native asset. Confirmed across 4,156 pools.
+ * address(0), despite USDC being the native asset. Confirmed across 130,462 pools.
  */
 export const USDC_ADDRESS = '0x3600000000000000000000000000000000000000' as const;
 

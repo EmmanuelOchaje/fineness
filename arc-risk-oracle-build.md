@@ -6,7 +6,7 @@
 
 > **Revision 3** — rewritten against first-hand mainnet findings from 17 Sep 2026.
 > Arc is Uniswap **v4 only**. This changes the Simulator substantially. See §4.
-> The PoolKey question is **resolved** (§4). Pool survey of 4,156 live pools
+> The PoolKey question is **resolved** (§4). Pool survey of 130,462 live pools
 > killed the naive hook check and replaced it with something better (§5).
 
 ---
@@ -105,17 +105,17 @@ retrieve normally. Always clamp a hint to a freshly read head before retrying.
 
 ### Pool landscape, surveyed 17 Sep 2026
 
-4,156 `Initialize` events decoded from the live PoolManager. This is the
+130,462 `Initialize` events decoded from the live PoolManager. This is the
 empirical basis for §4 and §5, and it is the part most likely to age.
 
 | | |
 |---|---|
 | Pools sampled | 4,156 — **the chain is not empty** |
 | Fee tier | `10000` (1%) on 96%; 19 pools use `0x800000`, the dynamic-fee flag |
-| USDC as `currency0` | 75% |
-| USDC as `currency1` | 19% |
+| USDC as `currency0` | 74.0% |
+| USDC as `currency1` | 19.6% |
 | **No USDC at all** | **5% (220 pools)** |
-| Pools with a non-zero hook | **95%** |
+| Pools with a non-zero hook | **91%** |
 | Distinct hook addresses | **3,823** across 3,965 hooked pools — one hook per pool |
 
 ---
@@ -177,15 +177,15 @@ parts and no Permit2 signature plumbing for a simulation that never persists.
 
 **USDC appears in `PoolKey` as the ERC-20 address
 `0x3600000000000000000000000000000000000000`, not as `address(0)`.** Confirmed
-across 4,156 decoded `Initialize` events. Build against `0x3600…` directly.
+across 130,462 decoded `Initialize` events. Build against `0x3600…` directly.
 
 ### But USDC is not always `currency0`
 
 v4 sorts currencies by address, and `0x3600…` sorts mid-range. So:
 
-- USDC is `currency0` in 75% of pools
-- USDC is `currency1` in 19%
-- USDC is **absent entirely** in 5% (220 pools — token/token pairs)
+- USDC is `currency0` in 74% of pools
+- USDC is `currency1` in 20%
+- USDC is **absent entirely** in 5% (8,323 pools — token/token pairs)
 
 **The Simulator must derive `zeroForOne` per pool from the actual key.** Assuming
 USDC is `currency0` swaps the wrong direction on a fifth of the chain, and the
@@ -197,8 +197,8 @@ route through an intermediate pool. Multi-hop routing is out of scope.
 
 ### Hooks: near-universal, so presence proves nothing
 
-95% of Arc pools carry a hook, and there are 3,823 distinct hook addresses across
-3,965 hooked pools — **a fresh hook deployed per pool**. So a non-zero `hooks`
+91% of Arc pools carry a hook, and there are 112,149 distinct hook addresses across
+118,650 hooked pools — **nearly one per pool**. So a non-zero `hooks`
 field flags almost the entire chain, and address allowlisting is impossible
 because addresses are never reused.
 
@@ -361,7 +361,7 @@ session.
 
 ### Prompt 0 — ✅ resolved 17 Sep 2026, results in §2 and §4
 
-Answered: USDC is `0x3600…` in `PoolKey`; 4,156 pools exist; 95% carry a hook;
+Answered: USDC is `0x3600…` in `PoolKey`; 130,462 pools exist; 95% carry a hook;
 hook permissions cluster on `0x2044`. Nothing to re-run unless the chain has
 moved on materially — in which case re-survey §2's pool-landscape table, since it
 is the fastest-ageing part of this document.
@@ -396,7 +396,7 @@ is the fastest-ageing part of this document.
 >
 > PoolManager: `0x8366a39CC670B4001A1121B8F6A443A643e40951`. **USDC appears in
 > `PoolKey` as the ERC-20 address `0x3600000000000000000000000000000000000000`,
-> not as `address(0)`** — this is confirmed against 4,156 live pools, do not use
+> not as `address(0)`** — this is confirmed against 130,462 live pools, do not use
 > the v4 native-currency convention here.
 >
 > Single entry point `simulate(PoolKey calldata key, uint256 usdcAmount)` that
@@ -405,11 +405,11 @@ is the fastest-ageing part of this document.
 > balance back → USDC, settle/take, record USDC returned.
 >
 > **Derive `zeroForOne` from the key at runtime. Do not assume USDC is
-> `currency0`** — it is `currency0` in only 75% of Arc pools and `currency1` in
-> 19%. Getting this wrong swaps the wrong direction and returns a plausible
+> `currency0`** — it is `currency0` in only 74% of Arc pools and `currency1` in
+> 20%. Getting this wrong swaps the wrong direction and returns a plausible
 > number that is backwards, with no error.
 >
-> If the key contains no USDC on either side (5% of pools are token/token),
+> If the key contains no USDC on either side (6% of pools are token/token),
 > revert with a distinct, named error. Do not attempt multi-hop routing.
 >
 > Record, per leg, **both** the balance delta PoolManager reports **and** the
@@ -460,8 +460,8 @@ is the fastest-ageing part of this document.
 > - `string[] flags` — human-readable failures
 >
 > **Hook permissions are the check that matters here — read §5 before writing
-> it.** Do not implement a `hooksClear` boolean: 95% of Arc pools have a hook and
-> there are 3,823 distinct hook addresses across 3,965 hooked pools, so presence
+> it.** Do not implement a `hooksClear` boolean: 91% of Arc pools have a hook and
+> there are 112,149 distinct hook addresses across 118,650 hooked pools, so presence
 > flags the whole chain and address allowlisting is impossible.
 >
 > Instead, extract the low 14 bits of `key.hooks` — v4 encodes a hook's
@@ -495,7 +495,7 @@ is the fastest-ageing part of this document.
 > token with no `owner()` function not reverting; a pool with a non-zero hook
 > surfacing it correctly.
 >
-> Arc has ~4,156 live pools, so real fork targets exist for the normal-token and
+> Arc has ~130,462 live pools, so real fork targets exist for the normal-token and
 > hooked-pool cases — use them. Write mocks in `test/mocks/` for the adversarial
 > cases (honeypot, high tax, proxy-with-zeroed-owner) that may not exist on Arc
 > yet, and note in comments that fork tests against real instances should replace
@@ -658,17 +658,17 @@ is the fastest-ageing part of this document.
 > 2000-result `eth_getLogs` cap and its range hints that can point past head;
 > native and ERC-20 USDC sharing a balance; USDC appearing in `PoolKey` as
 > `0x3600…` rather than the v4 native convention; and USDC being `currency0` in
-> only 75% of pools. This is useful to other Arc builders and evidences real
+> only 74% of pools. This is useful to other Arc builders and evidences real
 > deployment.
 >
-> Lead that section with the pool survey: 4,156 pools, 95% carrying a hook, 3,823
+> Lead that section with the pool survey: 130,462 pools, 95% carrying a hook, 3,823
 > distinct hook addresses, permissions clustering on `0x2044`. That survey is the
 > evidence base for the product's main check and it is the most novel thing here.
 >
 > Explain the two design decisions that a reviewer will otherwise read as gaps:
 > - **No LP-burn check.** v4 has no LP ERC-20, liquidity is an ERC-721 position,
 >   and Arc forbids zero-address transfers. Hook permission decoding replaces it.
-> - **Hook presence is not scored, hook permissions are.** 95% of Arc pools have
+> - **Hook presence is not scored, hook permissions are.** 91% of Arc pools have
 >   a hook, so presence is meaningless; the low 14 bits of the hook address encode
 >   what it may actually do, and deviation from the ecosystem baseline is the
 >   signal. Note that no other Arc tooling does this.
@@ -686,7 +686,7 @@ is the fastest-ageing part of this document.
 
 ## 10. Live risks
 
-**Empty chain.** ~~Blocking concern.~~ **Largely retired** — 4,156 pools exist and
+**Empty chain.** ~~Blocking concern.~~ **Largely retired** — 130,462 pools exist and
 PoolManager emits 300+ logs per 50 blocks. The demo can run on real data. What
 remains is a *quality* question: whether any token on Arc actually exhibits the
 adversarial behaviour the oracle detects. A chain full of honest launchpad tokens
@@ -700,7 +700,7 @@ identifiable by the `0x2044` hook permission signature without needing any
 published address.
 
 **The hook baseline is an empirical observation, not a spec.** `0x2044` is what
-4,156 pools looked like on 17 Sep 2026, four days into a chain's life. If a second
+130,462 pools looked like on 17 Sep 2026, four days into a chain's life. If a second
 launchpad arrives with different permissions, "anomalous" starts flagging honest
 tokens. Keep the baseline in config, re-survey before submission, and say in the
 README that it is measured rather than canonical.

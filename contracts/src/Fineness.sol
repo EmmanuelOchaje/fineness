@@ -161,7 +161,7 @@ contract Fineness {
         report.hookCanInterceptSwap = key.hooks.canInterceptSwap();
         report.hookTakesSwapFee = key.hooks.takesSwapFee();
 
-        // Presence of a hook is NOT a flag — 95% of Arc pools have one. Only a
+        // Presence of a hook is NOT a flag — 91% of Arc pools have one. Only a
         // hook that can intercept a swap before it executes earns a warning, and
         // even then the wording is deliberate: it states a capability, not an
         // accusation. ~5% of Arc pools hold this permission legitimately.

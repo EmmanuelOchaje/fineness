@@ -19,7 +19,7 @@ type Currency is address;
 /// @dev In v4, address(0) denotes the chain's native asset.
 ///      On Arc this convention is NOT used for USDC — pools reference the
 ///      ERC-20 address 0x3600...0000 instead, despite USDC being native.
-///      Confirmed across 4,156 live pools. See ARC-FINDINGS.md.
+///      Confirmed across 130,462 live pools. See ARC-FINDINGS.md.
 struct PoolKey {
     Currency currency0;
     Currency currency1;

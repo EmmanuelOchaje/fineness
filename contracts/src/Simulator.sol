@@ -42,7 +42,7 @@ import {
  *   - the TOKEN's transfer tax (the gap between sent and credited)
  *   - the POOL and HOOK's fees (the rest of the round-trip loss)
  *
- * On Arc that distinction matters more than usual: ~95% of pools run a hook that
+ * On Arc that distinction matters more than usual: ~91% of pools run a hook that
  * takes a cut of every swap, so some loss is normal launchpad behaviour rather
  * than anything the token is doing. Reporting one blended "tax" number would
  * misattribute a 1% launchpad fee as token malice.
@@ -89,8 +89,8 @@ contract Simulator is IUnlockCallback {
      * @param key   The pool to trade against. USDC must be one of its currencies.
      * @param usdcAmount Amount of USDC (6 decimals) to round-trip.
      *
-     * @dev USDC is NOT reliably `currency0` on Arc — it is currency0 in ~75% of
-     *      pools and currency1 in ~19%, because v4 sorts currencies by address
+     * @dev USDC is NOT reliably `currency0` on Arc — it is currency0 in ~74% of
+     *      pools and currency1 in ~20%, because v4 sorts currencies by address
      *      and 0x3600... sorts mid-range. Direction is therefore derived from
      *      the key at runtime. Hard-coding it swaps backwards on a fifth of the
      *      chain and returns a plausible number that is wrong, with no error.
@@ -111,7 +111,7 @@ contract Simulator is IUnlockCallback {
         address c0 = Currency.unwrap(key.currency0);
         address c1 = Currency.unwrap(key.currency1);
 
-        // 5% of Arc pools are token/token and contain no USDC at all. Reject
+        // 6% of Arc pools are token/token and contain no USDC at all. Reject
         // them explicitly rather than inventing a multi-hop route.
         if (c0 != usdc && c1 != usdc) revert PoolHasNoUsdc();
 

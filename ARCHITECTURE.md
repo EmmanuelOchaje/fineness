@@ -93,17 +93,17 @@ answer silently rather than an error:
 
 1. **USDC is `0x3600…` in `PoolKey`**, not `address(0)`, despite being the native
    asset. The v4 native convention does not apply here.
-2. **USDC is `currency0` in only 75% of pools** — `currency1` in 19%, absent
-   entirely in 5%. Derive `zeroForOne` per pool from the actual key.
-3. **95% of pools carry a hook**, with a fresh hook address per pool. Presence
-   proves nothing.
+2. **USDC is `currency0` in only 74% of pools** — `currency1` in 20%, absent
+   entirely in 6%. Derive `zeroForOne` per pool from the actual key.
+3. **91% of pools carry a hook**, and hook addresses are nearly all distinct
+   (112,149 across 118,650 hooked pools). Presence proves nothing.
 
 ---
 
 ## The differentiating check: hook permissions
 
 v4 encodes a hook's permissions in the low 14 bits of its own address. On Arc,
-4,156 surveyed pools cluster on one value:
+130,462 surveyed pools cluster on one value:
 
 ```
 0x2044 = BEFORE_INITIALIZE | AFTER_SWAP | AFTER_SWAP_RETURNS_DELTA

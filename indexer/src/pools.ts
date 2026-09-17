@@ -75,7 +75,7 @@ export function decodeInitialize(log: RawLog): DiscoveredPool {
     tickSpacing,
     hooks: hooks.toLowerCase() as Address,
     blockNumber: BigInt(log.blockNumber),
-    // ~5% of Arc pools are token/token and carry no USDC at all. They are
+    // ~6% of Arc pools are token/token and carry no USDC at all. They are
     // discoverable but not assayable without multi-hop routing, which is out of
     // scope — surfaced as null rather than silently dropped.
     token: hasUsdc ? ((usdcIsCurrency0 ? currency1 : currency0) as Address) : null,

@@ -125,10 +125,10 @@ This is the hardest and most important visual in the product. Most tools collaps
 "we checked and it's fine" into "we couldn't check" — and that gap is precisely
 where a trader gets hurt. If this state is right, the rest follows.
 
-**The normal hook.** 95% of Arc pools attach a hook that takes a cut of every
+**The normal hook.** 91% of Arc pools attach a hook that takes a cut of every
 swap. This is ordinary launchpad behaviour, not a threat. But "this pool contains
 code that runs on every trade" sounds alarming, and the report has to state it
-without making 95% of the chain look dangerous. The design job is a resting state
+without making 91% of the chain look dangerous. The design job is a resting state
 that reads as *noted and normal*, so that the rare genuinely anomalous
 permission set reads as loud by contrast. If everything is flagged, nothing is.
 

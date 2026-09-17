@@ -106,7 +106,7 @@ Direct PoolManager is fewer moving parts for a round-trip simulation and avoids
 Permit2 signature plumbing. Prefer it.
 
 **Resolved by the pool survey below:** USDC is `0x3600…` in `PoolKey`, and it is
-`currency0` in only 75% of pools — derive `zeroForOne` per pool.
+`currency0` in only 74% of pools — derive `zeroForOne` per pool.
 
 Hooks also matter: a v4 pool can attach a hook that blocks or taxes swaps, a
 honeypot vector with no v2/v3 equivalent. But on Arc 95% of pools have one, so
@@ -157,22 +157,25 @@ frontend.
 
 ---
 
-## Pool survey — 4,156 `Initialize` events decoded, 17 Sep 2026
+## Pool survey — 130,462 `Initialize` events decoded, 17 Sep 2026
 
 `Initialize` topic0:
 `0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438`
 (`currency0`/`currency1` are indexed topics 2 and 3; `fee`, `tickSpacing`,
 `hooks`, `sqrtPriceX96`, `tick` are packed in `data`.)
 
+Reproduce with `pnpm --filter @fineness/indexer survey`. Window: 250,000 blocks
+back from head 21,379,167.
+
 | | |
 |---|---|
-| Pools | 4,156 — the chain is **not** empty |
-| Fee tier | `10000` (1%) on 96%; 19 pools use `0x800000` (dynamic-fee flag) |
-| USDC as `currency0` | 75% |
-| USDC as `currency1` | 19% |
-| No USDC at all | 5% (220 token/token pools) |
-| Non-zero hook | 95% |
-| Distinct hook addresses | 3,823 across 3,965 hooked pools — one per pool |
+| Pools | **130,462** — the chain is emphatically not empty |
+| Fee tier | `10000` (1%) on 88%; 459 pools use `0x800000` (dynamic-fee flag) |
+| USDC as `currency0` | 74.0% (96,521) |
+| USDC as `currency1` | 19.6% (25,618) |
+| No USDC at all | 6.4% (8,323 token/token pools — unassayable) |
+| Non-zero hook | 90.9% (118,650) |
+| Distinct hook addresses | 112,149 — nearly one per pool |
 
 **USDC is `0x3600…` in `PoolKey`, not `address(0)`.** The v4 native-currency
 convention does not apply on Arc even though USDC is the native asset.
@@ -180,17 +183,36 @@ convention does not apply on Arc even though USDC is the native asset.
 **USDC is not reliably `currency0`.** v4 sorts by address and `0x3600…` sorts
 mid-range. `zeroForOne` must be derived per pool.
 
-**Hook permissions cluster on one value.** v4 encodes permissions in the low 14
-bits of the hook's address. The four dominant suffixes all decode to:
+**Hook permissions cluster hard on one value.** v4 encodes permissions in the low
+14 bits of the hook's address. The distribution across 118,650 hooked pools:
 
-```
-low14 = 0x2044 → BEFORE_INITIALIZE | AFTER_SWAP | AFTER_SWAP_RETURNS_DELTA
-```
+| Permissions | Pools | Meaning |
+|---|---|---|
+| `0x2044` | 111,725 (94.2%) | `BEFORE_INITIALIZE \| AFTER_SWAP \| AFTER_SWAP_RETURNS_DELTA` — **baseline** |
+| `0x20cc` | 3,363 | baseline **+ `BEFORE_SWAP` + `BEFORE_SWAP_RETURNS_DELTA`** |
+| `0x2acc` | 1,871 | as above, plus liquidity hooks |
+| `0x04cc` | 301 | before-swap family, no `BEFORE_INITIALIZE` |
+| `0x2544` | 292 | baseline + liquidity hooks (harmless) |
 
-A per-swap fee-taking hook — the standard launchpad pattern, consistent with
-aka.fun's documented trading fee. It is the norm, not a red flag. The norm does
-**not** include `BEFORE_SWAP` / `BEFORE_SWAP_RETURNS_DELTA`, which would let a
-hook block or re-price a sell. Deviation from this baseline is the signal.
+The baseline is a per-swap fee-taking hook — the standard launchpad pattern,
+consistent with aka.fun's documented trading fee. **It is the norm, not a red
+flag**, and must not cost score.
+
+**⚠️ Correction to the earlier small-sample read.** The first 4,156-pool sample
+suggested swap-intercepting hooks were vanishingly rare. At full scale they are
+not: **6,392 pools (~5.4% of hooked pools) carry `BEFORE_SWAP`**, which lets a
+hook block or re-price a sell.
+
+That is far too large a population to presume malicious, and there are legitimate
+uses (limit orders, dynamic pricing). So `BEFORE_SWAP` is a **heavy score
+deduction, not an automatic zero** — the behavioural round trip remains the
+actual proof of a honeypot. Treating a 5% population as guilty would repeat
+precisely the mistake this check was built to avoid.
+
+**Some hooks are reused across many pools.** `0x20eead…6acc` appears repeatedly.
+Address-level reputation is therefore viable as a *future* addition for the
+recurring minority, but cannot be the primary mechanism at 112,149 distinct
+addresses.
 
 *Caveat:* the bit-position ordering above was derived from observed addresses.
 Confirm against v4-core `Hooks.sol` before implementing. And `0x2044` is an

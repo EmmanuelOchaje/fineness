@@ -37,7 +37,7 @@ test('baseline decodes to exactly the three expected permissions', () => {
   );
 });
 
-test('a normal hook is NOT flagged — 95% of Arc pools have one', () => {
+test('a normal hook is NOT flagged — 91% of Arc pools have one', () => {
   // The whole point: presence must cost nothing, or the mark is meaningless.
   const a = analyzeHook(REAL_ARC_HOOKS[1]);
   assert.equal(a.beyondBaseline.length, 0);
