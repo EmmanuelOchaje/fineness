@@ -23,3 +23,6 @@ contracts/broadcast/
 
 .DS_Store
 *.log
+
+# Foundry deps — vendored via forge install, not committed
+contracts/lib/

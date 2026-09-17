@@ -7,12 +7,15 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "watch": "tsx src/watch.ts",
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --test src/*.test.ts",
+    "survey": "tsx src/survey.ts"
   },
   "dependencies": {
     "@fineness/shared": "workspace:*",
     "viem": "^2.21.55",
     "better-sqlite3": "^11.7.0"
   },
-  "devDependencies": { "@types/better-sqlite3": "^7.6.12" }
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12"
+  }
 }
