@@ -1,0 +1,19 @@
+{
+  "name": "@fineness/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/server.ts"
+  },
+  "dependencies": {
+    "@fineness/shared": "workspace:*",
+    "viem": "^2.21.55",
+    "fastify": "^5.2.0",
+    "@fastify/websocket": "^11.0.1",
+    "better-sqlite3": "^11.7.0"
+  },
+  "devDependencies": { "@types/better-sqlite3": "^7.6.12" }
+}

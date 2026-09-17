@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.next/
+out/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+!contracts/broadcast/**/run-latest.json
+
+# secrets — never commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# indexer state
+*.sqlite
+*.sqlite-journal
+*.db
+
+.DS_Store
+*.log

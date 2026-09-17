@@ -1,0 +1,21 @@
+{
+  "name": "fineness",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Pre-trade risk verification for Arc",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test:contracts": "cd contracts && forge test",
+    "test:fork": "cd contracts && forge test --profile fork"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  }
+}

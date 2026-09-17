@@ -1,0 +1,11 @@
+{
+  "name": "@fineness/web",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "typecheck": "tsc --noEmit"
+  },
+  "comment": "Deliberately unscaffolded. Build order step 8 — do not start the frontend until check() works."
+}
