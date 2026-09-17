@@ -1,0 +1,270 @@
+/**
+ * SQLite persistence for discovered pools, cached reports and holder snapshots.
+ *
+ * Deliberately boring. The interesting correctness lives in the oracle; this is
+ * a cache with a clear invalidation rule, and it should stay that way.
+ */
+// Node's built-in SQLite (Node 22+). Chosen over better-sqlite3 deliberately:
+// that package needs a native build with no prebuilt binary for Node 24, which
+// turns `pnpm install` into a toolchain problem for anyone cloning this repo.
+// Zero dependencies is worth more here than marginal performance.
+import { DatabaseSync } from 'node:sqlite';
+import type { DiscoveredPool } from './pools.js';
+import type { HolderSnapshot } from './holders.js';
+
+/**
+ * Default database location, resolved relative to this file rather than the
+ * process cwd. pnpm runs scripts with cwd set to the package directory, so a
+ * plain relative path resolves differently depending on who invoked it.
+ */
+export function defaultDbPath(): string {
+  return new URL('../fineness.sqlite', import.meta.url).pathname;
+}
+
+export interface StoredReport {
+  token: string;
+  poolId: string;
+  score: number;
+  isHoneypot: boolean;
+  buyTaxBps: number;
+  sellTaxBps: number;
+  poolFeeBps: number;
+  hookFeeBps: number;
+  hookPermissions: number;
+  hookCanInterceptSwap: boolean;
+  ownershipRenounced: boolean;
+  mayBeUpgradeable: boolean;
+  dynamicFee: boolean;
+  flags: string[];
+  checkedAt: number;
+}
+
+export class Db {
+  private readonly db: DatabaseSync;
+
+  constructor(path: string) {
+    this.db = new DatabaseSync(path);
+    this.db.exec('PRAGMA journal_mode = WAL');
+    this.migrate();
+  }
+
+  private migrate(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS pools (
+        pool_id          TEXT PRIMARY KEY,
+        token            TEXT,
+        currency0        TEXT NOT NULL,
+        currency1        TEXT NOT NULL,
+        fee              INTEGER NOT NULL,
+        tick_spacing     INTEGER NOT NULL,
+        hooks            TEXT NOT NULL,
+        usdc_is_currency0 INTEGER NOT NULL,
+        has_dynamic_fee  INTEGER NOT NULL,
+        -- Block number, not timestamp: Arc timestamps are non-decreasing but
+        -- not strictly increasing, so sub-second blocks can share one.
+        init_block       INTEGER NOT NULL,
+        discovered_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pools_token ON pools(token);
+      CREATE INDEX IF NOT EXISTS idx_pools_block ON pools(init_block DESC);
+
+      CREATE TABLE IF NOT EXISTS reports (
+        token            TEXT PRIMARY KEY,
+        pool_id          TEXT NOT NULL,
+        score            INTEGER NOT NULL,
+        is_honeypot      INTEGER NOT NULL,
+        buy_tax_bps      INTEGER NOT NULL,
+        sell_tax_bps     INTEGER NOT NULL,
+        pool_fee_bps     INTEGER NOT NULL,
+        hook_fee_bps     INTEGER NOT NULL,
+        hook_permissions INTEGER NOT NULL,
+        hook_intercepts  INTEGER NOT NULL,
+        ownership_renounced INTEGER NOT NULL,
+        may_be_upgradeable  INTEGER NOT NULL,
+        dynamic_fee      INTEGER NOT NULL,
+        flags            TEXT NOT NULL,
+        checked_at       INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_reports_score ON reports(score DESC);
+
+      CREATE TABLE IF NOT EXISTS holders (
+        token            TEXT PRIMARY KEY,
+        holder_count     INTEGER NOT NULL,
+        top10_share      REAL NOT NULL,
+        verdict          TEXT NOT NULL,
+        reason           TEXT NOT NULL,
+        snapshot         TEXT NOT NULL,
+        to_block         INTEGER NOT NULL,
+        checked_at       INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cursor (
+        key              TEXT PRIMARY KEY,
+        block            INTEGER NOT NULL
+      );
+    `);
+  }
+
+  upsertPool(p: DiscoveredPool): void {
+    this.db
+      .prepare(
+        `INSERT INTO pools (pool_id, token, currency0, currency1, fee, tick_spacing,
+           hooks, usdc_is_currency0, has_dynamic_fee, init_block, discovered_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(pool_id) DO NOTHING`,
+      )
+      .run(
+        p.poolId,
+        p.token,
+        p.currency0,
+        p.currency1,
+        p.fee,
+        p.tickSpacing,
+        p.hooks,
+        p.usdcIsCurrency0 ? 1 : 0,
+        p.hasDynamicFee ? 1 : 0,
+        Number(p.blockNumber),
+        Date.now(),
+      );
+  }
+
+  /** Pools we can actually assay — a USDC pair. ~94% of the chain. */
+  recentAssayablePools(limit = 100): DiscoveredPool[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM pools WHERE token IS NOT NULL
+         ORDER BY init_block DESC LIMIT ?`,
+      )
+      .all(limit) as Record<string, never>[];
+    return rows.map((r) => this.rowToPool(r));
+  }
+
+  getPoolByToken(token: string): DiscoveredPool | null {
+    const r = this.db
+      .prepare(`SELECT * FROM pools WHERE token = ? ORDER BY init_block DESC LIMIT 1`)
+      .get(token.toLowerCase()) as Record<string, never> | undefined;
+    return r ? this.rowToPool(r) : null;
+  }
+
+  private rowToPool(r: Record<string, never>): DiscoveredPool {
+    const g = (k: string) => (r as Record<string, unknown>)[k];
+    return {
+      poolId: g('pool_id') as string,
+      token: g('token') as DiscoveredPool['token'],
+      currency0: g('currency0') as DiscoveredPool['currency0'],
+      currency1: g('currency1') as DiscoveredPool['currency1'],
+      fee: g('fee') as number,
+      tickSpacing: g('tick_spacing') as number,
+      hooks: g('hooks') as DiscoveredPool['hooks'],
+      usdcIsCurrency0: g('usdc_is_currency0') === 1,
+      hasDynamicFee: g('has_dynamic_fee') === 1,
+      blockNumber: BigInt(g('init_block') as number),
+    };
+  }
+
+  saveReport(r: StoredReport): void {
+    this.db
+      .prepare(
+        `INSERT INTO reports (token, pool_id, score, is_honeypot, buy_tax_bps,
+           sell_tax_bps, pool_fee_bps, hook_fee_bps, hook_permissions,
+           hook_intercepts, ownership_renounced, may_be_upgradeable, dynamic_fee,
+           flags, checked_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(token) DO UPDATE SET
+           score=excluded.score, is_honeypot=excluded.is_honeypot,
+           buy_tax_bps=excluded.buy_tax_bps, sell_tax_bps=excluded.sell_tax_bps,
+           pool_fee_bps=excluded.pool_fee_bps, hook_fee_bps=excluded.hook_fee_bps,
+           hook_permissions=excluded.hook_permissions,
+           hook_intercepts=excluded.hook_intercepts,
+           ownership_renounced=excluded.ownership_renounced,
+           may_be_upgradeable=excluded.may_be_upgradeable,
+           dynamic_fee=excluded.dynamic_fee, flags=excluded.flags,
+           checked_at=excluded.checked_at`,
+      )
+      .run(
+        r.token.toLowerCase(), r.poolId, r.score, r.isHoneypot ? 1 : 0,
+        r.buyTaxBps, r.sellTaxBps, r.poolFeeBps, r.hookFeeBps, r.hookPermissions,
+        r.hookCanInterceptSwap ? 1 : 0, r.ownershipRenounced ? 1 : 0,
+        r.mayBeUpgradeable ? 1 : 0, r.dynamicFee ? 1 : 0,
+        JSON.stringify(r.flags), r.checkedAt,
+      );
+  }
+
+  getReport(token: string): StoredReport | null {
+    const r = this.db
+      .prepare(`SELECT * FROM reports WHERE token = ?`)
+      .get(token.toLowerCase()) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      token: r.token as string,
+      poolId: r.pool_id as string,
+      score: r.score as number,
+      isHoneypot: r.is_honeypot === 1,
+      buyTaxBps: r.buy_tax_bps as number,
+      sellTaxBps: r.sell_tax_bps as number,
+      poolFeeBps: r.pool_fee_bps as number,
+      hookFeeBps: r.hook_fee_bps as number,
+      hookPermissions: r.hook_permissions as number,
+      hookCanInterceptSwap: r.hook_intercepts === 1,
+      ownershipRenounced: r.ownership_renounced === 1,
+      mayBeUpgradeable: r.may_be_upgradeable === 1,
+      dynamicFee: r.dynamic_fee === 1,
+      flags: JSON.parse(r.flags as string) as string[],
+      checkedAt: r.checked_at as number,
+    };
+  }
+
+  listReports(limit = 100): StoredReport[] {
+    const rows = this.db
+      .prepare(`SELECT token FROM reports ORDER BY checked_at DESC LIMIT ?`)
+      .all(limit) as { token: string }[];
+    return rows.map((r) => this.getReport(r.token)!).filter(Boolean);
+  }
+
+  saveHolders(s: HolderSnapshot): void {
+    this.db
+      .prepare(
+        `INSERT INTO holders (token, holder_count, top10_share, verdict, reason,
+           snapshot, to_block, checked_at)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(token) DO UPDATE SET
+           holder_count=excluded.holder_count, top10_share=excluded.top10_share,
+           verdict=excluded.verdict, reason=excluded.reason,
+           snapshot=excluded.snapshot, to_block=excluded.to_block,
+           checked_at=excluded.checked_at`,
+      )
+      .run(
+        s.token.toLowerCase(), s.holderCount, s.top10Share, s.verdict, s.reason,
+        JSON.stringify(s.top10, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
+        Number(s.toBlock), Date.now(),
+      );
+  }
+
+  getHolders(token: string): Record<string, unknown> | null {
+    const r = this.db
+      .prepare(`SELECT * FROM holders WHERE token = ?`)
+      .get(token.toLowerCase()) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return { ...r, snapshot: JSON.parse(r.snapshot as string) as unknown };
+  }
+
+  getCursor(key: string): bigint | null {
+    const r = this.db.prepare(`SELECT block FROM cursor WHERE key = ?`).get(key) as
+      | { block: number }
+      | undefined;
+    return r ? BigInt(r.block) : null;
+  }
+
+  setCursor(key: string, block: bigint): void {
+    this.db
+      .prepare(
+        `INSERT INTO cursor (key, block) VALUES (?,?)
+         ON CONFLICT(key) DO UPDATE SET block=excluded.block`,
+      )
+      .run(key, Number(block));
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}

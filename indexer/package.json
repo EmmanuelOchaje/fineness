@@ -10,14 +10,11 @@
     "test": "tsx --test src/*.test.ts",
     "survey": "tsx src/survey.ts",
     "find-pools": "tsx src/find-liquid-pools.ts",
-    "verify-live": "tsx src/verify-live.ts"
+    "verify-live": "tsx src/verify-live.ts",
+    "backfill": "tsx src/backfill.ts"
   },
   "dependencies": {
     "@fineness/shared": "workspace:*",
-    "viem": "^2.21.55",
-    "better-sqlite3": "^11.7.0"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12"
+    "viem": "^2.21.55"
   }
 }
