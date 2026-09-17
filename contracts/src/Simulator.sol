@@ -50,8 +50,24 @@ import {
 contract Simulator is IUnlockCallback {
     using BalanceDeltaLib for BalanceDelta;
 
-    IPoolManager public immutable poolManager;
-    address public immutable usdc;
+    /**
+     * Chain addresses are `constant`, not `immutable`, and that is deliberate.
+     *
+     * Immutables are baked in at construction, so a contract using them cannot
+     * be injected into an `eth_call` via a `code` state override — there is no
+     * constructor run to set them. Constants make the deployed bytecode fully
+     * self-contained, which means this contract can be simulated on mainnet
+     * WITHOUT BEING DEPLOYED AT ALL.
+     *
+     * That turned out to matter more than expected: Foundry's forked REVM cannot
+     * execute Arc's native-backed USDC (see Simulator.fork.t.sol), so validating
+     * the round trip against real state requires eth_call + code override. This
+     * makes that possible, and costs nothing — Fineness is a single-chain oracle
+     * and these addresses never vary.
+     */
+    IPoolManager public constant poolManager =
+        IPoolManager(0x8366a39CC670B4001A1121B8F6A443A643e40951);
+    address public constant usdc = 0x3600000000000000000000000000000000000000;
 
     struct SimResult {
         // --- buy leg ---
@@ -79,11 +95,6 @@ contract Simulator is IUnlockCallback {
     error PoolHasNoUsdc();
     error BuyLegFailed(string reason);
     error NothingReceived();
-
-    constructor(IPoolManager _poolManager, address _usdc) {
-        poolManager = _poolManager;
-        usdc = _usdc;
-    }
 
     /**
      * @param key   The pool to trade against. USDC must be one of its currencies.

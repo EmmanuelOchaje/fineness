@@ -30,12 +30,39 @@ import {IPoolManager, IERC20Minimal, PoolKey, Currency} from "./interfaces/IPool
 contract Fineness {
     using HookPermissions for address;
 
-    Simulator public immutable simulator;
-    address public immutable usdc;
+    /**
+     * @dev Same reasoning as Simulator: constants keep the deployed bytecode
+     *      self-contained so it can be injected via an eth_call code override.
+     *
+     *      The Simulator address is deterministic — deployed by CREATE2 with
+     *      salt keccak256("fineness.simulator.v1") through the standard factory
+     *      at 0x4e59b448..., so it is computable before deployment and identical
+     *      on any chain. The deploy script asserts the match and refuses to
+     *      proceed if Simulator's bytecode changed without this being updated.
+     */
+    Simulator public constant simulator = Simulator(0x880067680E32b27644ea82B62969eF074Fd85093);
+    address public constant usdc = 0x3600000000000000000000000000000000000000;
 
-    /// @notice Hook baseline is mutable config, not a constant, because it is an
-    ///         empirical measurement of a days-old chain rather than a spec.
-    uint16 public hookBaseline = HookPermissions.ARC_BASELINE;
+    /**
+     * @notice Hook baseline as mutable config, because it is an empirical
+     *         measurement of a days-old chain rather than a spec.
+     *
+     * @dev Deliberately NOT initialized at the declaration. A declaration
+     *      initializer runs in the constructor, and this contract is designed to
+     *      be injected into an `eth_call` via a code override — where no
+     *      constructor ever runs and all storage reads as zero.
+     *
+     *      Without the fallback in `baseline()`, an injected call would compare
+     *      every hook against a baseline of 0 and flag 94% of the chain as
+     *      anomalous. That bug shipped for exactly one test run and was caught
+     *      by live verification; keep the fallback.
+     */
+    uint16 public hookBaseline;
+
+    /// @notice The effective baseline. Zero storage means "never configured".
+    function baseline() public view returns (uint16) {
+        return hookBaseline == 0 ? HookPermissions.ARC_BASELINE : hookBaseline;
+    }
     address public owner;
 
     uint24 internal constant DYNAMIC_FEE_FLAG = 0x800000;
@@ -49,7 +76,8 @@ contract Fineness {
         uint16 buyTaxBps; // the TOKEN's transfer tax on the way in
         uint16 sellTaxBps; // the TOKEN's transfer tax on the way out
         uint16 roundTripLossBps; // total cost of a round trip
-        uint16 poolAndHookFeeBps; // the venue's cut, not the token's
+        uint16 poolFeeBps; // the pool's own fee tier, both legs
+        uint16 hookFeeBps; // the HOOK's cut - launchpad economics, not the token's
         // --- authority ---
         bool hasOwnerFunction;
         bool ownershipRenounced;
@@ -68,9 +96,7 @@ contract Fineness {
 
     error NotOwner();
 
-    constructor(Simulator _simulator, address _usdc) {
-        simulator = _simulator;
-        usdc = _usdc;
+    constructor() {
         owner = msg.sender;
     }
 
@@ -102,6 +128,8 @@ contract Fineness {
         string[] memory flags = new string[](12);
         uint256 n;
 
+        report.dynamicFee = key.fee == DYNAMIC_FEE_FLAG;
+
         // ---- 1. the round trip -------------------------------------------
         Simulator.SimResult memory sim = simulator.simulate(key, usdcAmount);
 
@@ -120,14 +148,24 @@ contract Fineness {
                 ? _bps(sim.usdcSent - sim.usdcReceived, sim.usdcSent)
                 : 0;
 
-            // Whatever the round trip cost that the token's own transfer tax
-            // does not explain is the venue's cut: pool fee plus hook fee.
-            // Reported separately because "this token taxes you 20%" and "this
-            // launchpad charges 1%" are completely different warnings, and on
-            // Arc ~95% of pools charge the latter as a matter of course.
+            // Decompose the round-trip loss into its three real sources.
+            //
+            // `fee` is in hundredths of a bip (1e-6), so fee/100 is bps per leg
+            // and a round trip pays it twice. Measured against live Arc pools
+            // this lands almost exactly: an UNHOOKED 1% pool loses ~198bps on a
+            // round trip, which is the pool fee and nothing else. Hooked pools
+            // on the same fee tier lose 440-780bps, and that excess is the hook.
+            //
+            // Keeping these apart is the point. "This token taxes you 20%",
+            // "this venue charges 1%" and "this launchpad skims 6%" are three
+            // different warnings, and ~91% of Arc pools charge the last one as a
+            // matter of course.
             uint16 tokenPortion = report.buyTaxBps + report.sellTaxBps;
-            report.poolAndHookFeeBps = report.roundTripLossBps > tokenPortion
-                ? report.roundTripLossBps - tokenPortion
+            report.poolFeeBps = report.dynamicFee ? 0 : uint16((uint256(key.fee) * 2) / 100);
+
+            uint256 explained = uint256(tokenPortion) + uint256(report.poolFeeBps);
+            report.hookFeeBps = report.roundTripLossBps > explained
+                ? uint16(uint256(report.roundTripLossBps) - explained)
                 : 0;
         }
 
@@ -155,9 +193,10 @@ contract Fineness {
         // ---- 3. the v4 checks ---------------------------------------------
         report.hook = key.hooks;
         report.hookPermissions = key.hooks.permissions();
-        report.hookBeyondBaseline = key.hooks.beyondBaseline(hookBaseline);
+        uint16 base = baseline();
+        report.hookBeyondBaseline = key.hooks.beyondBaseline(base);
         report.hookMatchesBaseline =
-            key.hooks != address(0) && report.hookPermissions == hookBaseline;
+            key.hooks != address(0) && report.hookPermissions == base;
         report.hookCanInterceptSwap = key.hooks.canInterceptSwap();
         report.hookTakesSwapFee = key.hooks.takesSwapFee();
 
@@ -171,7 +210,6 @@ contract Fineness {
             flags[n++] = "HOOK PERMISSIONS EXCEED ECOSYSTEM NORM";
         }
 
-        report.dynamicFee = key.fee == DYNAMIC_FEE_FLAG;
         if (report.dynamicFee) {
             flags[n++] = "DYNAMIC FEE - may change before your trade";
         }

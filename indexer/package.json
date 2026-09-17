@@ -8,7 +8,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "watch": "tsx src/watch.ts",
     "test": "tsx --test src/*.test.ts",
-    "survey": "tsx src/survey.ts"
+    "survey": "tsx src/survey.ts",
+    "find-pools": "tsx src/find-liquid-pools.ts",
+    "verify-live": "tsx src/verify-live.ts"
   },
   "dependencies": {
     "@fineness/shared": "workspace:*",
