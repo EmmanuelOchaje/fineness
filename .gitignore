@@ -26,3 +26,7 @@ contracts/broadcast/
 
 # Foundry deps — vendored via forge install, not committed
 contracts/lib/
+
+# indexer database
+fineness.sqlite*
+**/fineness.sqlite*
