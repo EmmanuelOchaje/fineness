@@ -32,6 +32,8 @@ export interface FeedRow {
   grade: number;
   /** null = not enough history yet. Never render as 0%. */
   changePct: number | null;
+  /** Minutes the change actually spans — may be under 15 early on. */
+  changeOverMin: number | null;
   active: boolean;
   swaps: number;
   direction: 'up' | 'down' | 'flat' | null;
@@ -208,7 +210,10 @@ export function LiveFeed({
             <div />
             <div>Token</div>
             <div style={{ textAlign: 'right' }}>Market cap</div>
-            <div style={{ textAlign: 'right' }}>15m</div>
+            {/* Labelled "Change", not "15m": early on the comparison spans
+                less than 15 minutes, and claiming a window we do not have
+                would be the same false-precision mistake as the old score. */}
+            <div style={{ textAlign: 'right' }}>Change</div>
             <div style={{ textAlign: 'right' }}>Swaps</div>
             <div style={{ textAlign: 'right' }}>Exit cost</div>
             <div style={{ textAlign: 'right' }}>Priced</div>
@@ -325,9 +330,18 @@ export function LiveFeed({
                               : 'var(--faint)',
                   }}
                 >
-                  {r.changePct === null
-                    ? '—'
-                    : `${r.changePct > 0 ? '+' : ''}${r.changePct.toFixed(1)}%`}
+                  {r.changePct === null ? (
+                    <span title="Not enough price history yet">—</span>
+                  ) : (
+                    <span title={`over ${r.changeOverMin ?? '?'} min`}>
+                      {r.changePct > 0 ? '+' : ''}
+                      {r.changePct.toFixed(1)}%
+                      <span style={{ color: 'var(--faint)', fontSize: 10 }}>
+                        {' '}
+                        {r.changeOverMin}m
+                      </span>
+                    </span>
+                  )}
                 </div>
 
                 {/* Swaps in the window. A flat market cap with zero swaps is

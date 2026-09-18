@@ -337,23 +337,50 @@ export class Db {
    * every few seconds buys nothing. The handful that ARE trading are the only
    * ones whose number is actually moving, and they are what a live feed is for.
    */
-  repriceTargets(limit = 10, activityWindowMs = 15 * 60 * 1000): {
-    token: string;
-    poolId: string;
-  }[] {
-    return this.db
+  repriceTargets(
+    limit = 10,
+    activityWindowMs = 15 * 60 * 1000,
+    visible = 150,
+  ): { token: string; poolId: string }[] {
+    const since = Date.now() - activityWindowMs;
+
+    // Half the budget to tokens that are actually trading — their number is
+    // the only one genuinely moving.
+    const half = Math.max(1, Math.floor(limit / 2));
+    const active = this.db
       .prepare(
         `SELECT r.token, r.pool_id AS poolId,
                 COALESCE((SELECT SUM(a.swaps) FROM activity a
                           WHERE a.token = r.token AND a.at >= ?), 0) AS act
          FROM reports r
+         WHERE act > 0
          ORDER BY act DESC, COALESCE(r.priced_at, r.checked_at) ASC
          LIMIT ?`,
       )
-      .all(Date.now() - activityWindowMs, limit) as {
-      token: string;
-      poolId: string;
-    }[];
+      .all(since, half) as { token: string; poolId: string }[];
+
+    // The other half to whatever has waited longest AMONG THE ROWS A USER CAN
+    // SEE. Ordering purely by activity starved everything else: with a
+    // thousand tracked tokens the same handful was re-selected every pass and
+    // the median price age reached 59 minutes, so most of the feed showed
+    // hour-old numbers. Tokens far below the visible window do not need
+    // refreshing at all — nobody is looking at them.
+    const taken = new Set(active.map((a) => a.token));
+    const stale = this.db
+      .prepare(
+        `SELECT token, pool_id AS poolId FROM (
+           SELECT token, pool_id, priced_at, checked_at FROM reports
+           ORDER BY COALESCE(init_block, 0) DESC LIMIT ?
+         ) ORDER BY COALESCE(priced_at, checked_at) ASC LIMIT ?`,
+      )
+      .all(visible, limit) as { token: string; poolId: string }[];
+
+    const out = [...active];
+    for (const r of stale) {
+      if (out.length >= limit) break;
+      if (!taken.has(r.token)) out.push(r);
+    }
+    return out;
   }
 
   /** Update just the price fields, leaving the verdict untouched. */
@@ -376,22 +403,39 @@ export class Db {
    * sample. Null means "not enough history", never 0% — a token we have only
    * just met has not been flat, it has been unobserved.
    */
-  priceChangePct(token: string, windowMs: number): number | null {
-    const since = Date.now() - windowMs;
-    const row = this.db
-      .prepare(
-        `SELECT market_cap AS old FROM price_history
-         WHERE token = ? AND at <= ? ORDER BY at DESC LIMIT 1`,
-      )
-      .get(token.toLowerCase(), since) as { old: number } | undefined;
-    if (!row || row.old <= 0) return null;
-
+  priceChangePct(token: string, windowMs: number): { pct: number; sinceMs: number } | null {
+    const t = token.toLowerCase();
     const cur = this.db
       .prepare(`SELECT market_cap AS c FROM reports WHERE token = ?`)
-      .get(token.toLowerCase()) as { c: number | null } | undefined;
+      .get(t) as { c: number | null } | undefined;
     if (!cur?.c) return null;
 
-    return ((cur.c - row.old) / row.old) * 100;
+    // Prefer a sample at least `windowMs` old. If we have not been watching
+    // that long, fall back to the OLDEST sample we do have and report how far
+    // back it actually reaches.
+    //
+    // A column that shows "—" for an hour because it insists on a 15-minute
+    // baseline is worse than one that says "+4% over 3 minutes": the first
+    // looks broken, the second is true and immediately useful.
+    const at = Date.now() - windowMs;
+    const row = (this.db
+      .prepare(
+        `SELECT market_cap AS old, at FROM price_history
+         WHERE token = ? AND at <= ? ORDER BY at DESC LIMIT 1`,
+      )
+      .get(t, at) ??
+      this.db
+        .prepare(
+          `SELECT market_cap AS old, at FROM price_history
+           WHERE token = ? ORDER BY at ASC LIMIT 1`,
+        )
+        .get(t)) as { old: number; at: number } | undefined;
+
+    if (!row || row.old <= 0) return null;
+    // A single sample taken moments ago says nothing yet.
+    if (Date.now() - row.at < 30_000) return null;
+
+    return { pct: ((cur.c - row.old) / row.old) * 100, sinceMs: Date.now() - row.at };
   }
 
   recordActivity(token: string, swaps: number, at = Date.now()): void {

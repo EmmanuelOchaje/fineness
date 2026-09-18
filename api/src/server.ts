@@ -115,7 +115,8 @@ app.get<{ Querystring: { limit?: string; minScore?: string; minMcap?: string } }
 function row(r: import('../../indexer/src/db.js').StoredReport) {
   // null means not enough history yet — never rendered as 0%, because a token
   // we have only just met has not been flat, it has been unobserved.
-  const change = db.priceChangePct(r.token, ACTIVITY_WINDOW_MS);
+  const ch = db.priceChangePct(r.token, ACTIVITY_WINDOW_MS);
+  const change = ch?.pct ?? null;
   const swaps = db.swapsIn(r.token, ACTIVITY_WINDOW_MS);
   const moved = change !== null && Math.abs(change) >= MOVE_PCT;
   const traded = swaps >= MIN_SWAPS;
@@ -127,6 +128,8 @@ function row(r: import('../../indexer/src/db.js').StoredReport) {
     mark: mark(r.grade),
     grade: r.grade ?? 0,
     changePct: change,
+    /** How far back the comparison actually reaches, in minutes. */
+    changeOverMin: ch ? Math.max(1, Math.round(ch.sinceMs / 60_000)) : null,
     swaps,
     // "Active", not "surging": direction is irrelevant to whether a token
     // deserves a second look, and a token being traded at all is the signal.
@@ -265,7 +268,7 @@ app.get<{ Params: { address: string } }>('/tokens/:address', async (req, reply) 
     marketCap: cached!.marketCap ?? null,
     mark: mark(cached!.grade),
     grade: cached!.grade ?? 0,
-    changePct: db.priceChangePct(address, ACTIVITY_WINDOW_MS),
+    changePct: db.priceChangePct(address, ACTIVITY_WINDOW_MS)?.pct ?? null,
     swaps: db.swapsIn(address, ACTIVITY_WINDOW_MS),
 
     // Everything under here is deterministic and provable on-chain.

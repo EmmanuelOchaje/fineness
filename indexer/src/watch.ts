@@ -62,9 +62,18 @@ const CURSOR_KEY = 'pools';
  * changes; the price moves every block. So they refresh on different cadences —
  * the repricer re-runs only the probe and touches nothing else.
  */
-const REPRICE_MS = Number(process.env.WATCH_REPRICE_MS ?? 4_000);
-const REPRICE_BATCH = Number(process.env.WATCH_REPRICE_BATCH ?? 10);
-const REPRICE_CONCURRENCY = Number(process.env.WATCH_REPRICE_CONCURRENCY ?? 4);
+const REPRICE_MS = Number(process.env.WATCH_REPRICE_MS ?? 2_000);
+const REPRICE_BATCH = Number(process.env.WATCH_REPRICE_BATCH ?? 24);
+const REPRICE_CONCURRENCY = Number(process.env.WATCH_REPRICE_CONCURRENCY ?? 8);
+
+/**
+ * How many of the newest tokens to keep priced.
+ *
+ * Deliberately matched to the feed size. Keeping a thousand tracked tokens
+ * live on a rate-limited public RPC is not achievable and not useful — nobody
+ * is looking at row 800. Refresh what is on screen, and let the rest go stale.
+ */
+const REPRICE_SCOPE = Number(process.env.WATCH_REPRICE_SCOPE ?? 100);
 
 /** Cap the catch-up window so a long outage does not stall the watcher. */
 const MAX_CATCHUP_BLOCKS = 20_000n;
@@ -78,6 +87,7 @@ class Watcher {
   private readonly rpc: ArcRpc;
   private readonly priceRpc: ArcRpc;
   private repricing = false;
+  private readonly supplyCache = new Map<string, bigint>();
   private readonly db: Db;
   private readonly oracle: Oracle;
   private readonly priceOracle: Oracle;
@@ -381,7 +391,7 @@ class Watcher {
     this.repricing = true;
     try {
       this.db.prunePriceHistory();
-      const targets = this.db.repriceTargets(REPRICE_BATCH);
+      const targets = this.db.repriceTargets(REPRICE_BATCH, 15 * 60 * 1000, REPRICE_SCOPE);
 
       // Small worker pool so a batch completes in roughly one call's time
       // instead of ten sequential ones.
@@ -394,14 +404,21 @@ class Watcher {
           if (!pool?.token) continue;
           try {
             const r = await this.priceOracle.check(pool);
-            const supply = await this.priceRpc.call<string>('eth_call', [
-              { to: pool.token, data: '0x18160ddd' },
-              'latest',
-            ]);
-            this.db.updatePrice(
-              t.token,
-              marketCapUsd(r.usdcProbed, r.tokensOut, BigInt(supply)),
-            );
+
+            // Total supply is cached. These are fixed-supply launchpad clones
+            // with no mint function, so re-reading it every few seconds doubled
+            // the request count for a value that cannot change.
+            let supply = this.supplyCache.get(t.token);
+            if (supply === undefined) {
+              supply = BigInt(
+                await this.priceRpc.call<string>('eth_call', [
+                  { to: pool.token, data: '0x18160ddd' },
+                  'latest',
+                ]),
+              );
+              this.supplyCache.set(t.token, supply);
+            }
+            this.db.updatePrice(t.token, marketCapUsd(r.usdcProbed, r.tokensOut, supply));
           } catch {
             // Stamp the attempt so a permanently unpriceable token does not jam
             // the rotation at the front of the queue forever.
