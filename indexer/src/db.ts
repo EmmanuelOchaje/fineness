@@ -40,6 +40,10 @@ export interface StoredReport {
   /** null = could not be derived. Never conflate with zero. */
   marketCap?: number | null;
   initBlock?: number | null;
+  name?: string | null;
+  symbol?: string | null;
+  logo?: string | null;
+  pricedAt?: number | null;
 }
 
 export class Db {
@@ -112,7 +116,17 @@ export class Db {
     `);
 
     // Additive migrations for databases created before these columns existed.
-    for (const [col, type] of [['market_cap', 'REAL'], ['init_block', 'INTEGER']]) {
+    for (const [col, type] of [
+      ['market_cap', 'REAL'],
+      ['init_block', 'INTEGER'],
+      ['name', 'TEXT'],
+      ['symbol', 'TEXT'],
+      ['logo', 'TEXT'],
+      // Assay time vs price time are different questions. The verdict is
+      // expensive and stable; the price moves every block. Tracking them
+      // separately lets the repricer refresh one without redoing the other.
+      ['priced_at', 'INTEGER'],
+    ]) {
       try {
         this.db.exec(`ALTER TABLE reports ADD COLUMN ${col} ${type}`);
       } catch {
@@ -184,8 +198,8 @@ export class Db {
         `INSERT INTO reports (token, pool_id, score, is_honeypot, buy_tax_bps,
            sell_tax_bps, pool_fee_bps, hook_fee_bps, hook_permissions,
            hook_intercepts, ownership_renounced, may_be_upgradeable, dynamic_fee,
-           flags, checked_at, market_cap, init_block)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           flags, checked_at, market_cap, init_block, name, symbol, logo, priced_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(token) DO UPDATE SET
            score=excluded.score, is_honeypot=excluded.is_honeypot,
            buy_tax_bps=excluded.buy_tax_bps, sell_tax_bps=excluded.sell_tax_bps,
@@ -196,7 +210,12 @@ export class Db {
            may_be_upgradeable=excluded.may_be_upgradeable,
            dynamic_fee=excluded.dynamic_fee, flags=excluded.flags,
            checked_at=excluded.checked_at, market_cap=excluded.market_cap,
-           init_block=excluded.init_block`,
+           init_block=excluded.init_block, priced_at=excluded.priced_at,
+           -- Metadata is only overwritten when the new value is non-null, so a
+           -- transient IPFS or RPC failure cannot erase a name we already have.
+           name=COALESCE(excluded.name, reports.name),
+           symbol=COALESCE(excluded.symbol, reports.symbol),
+           logo=COALESCE(excluded.logo, reports.logo)`,
       )
       .run(
         r.token.toLowerCase(), r.poolId, r.score, r.isHoneypot ? 1 : 0,
@@ -205,6 +224,8 @@ export class Db {
         r.mayBeUpgradeable ? 1 : 0, r.dynamicFee ? 1 : 0,
         JSON.stringify(r.flags), r.checkedAt,
         r.marketCap ?? null, r.initBlock ?? null,
+        r.name ?? null, r.symbol ?? null, r.logo ?? null,
+        r.pricedAt ?? r.checkedAt,
       );
   }
 
@@ -231,6 +252,10 @@ export class Db {
       checkedAt: r.checked_at as number,
       marketCap: (r.market_cap as number | null) ?? null,
       initBlock: (r.init_block as number | null) ?? null,
+      name: (r.name as string | null) ?? null,
+      symbol: (r.symbol as string | null) ?? null,
+      logo: (r.logo as string | null) ?? null,
+      pricedAt: (r.priced_at as number | null) ?? null,
     };
   }
 
@@ -248,10 +273,32 @@ export class Db {
     return rows.map((r) => this.getReport(r.token)!).filter(Boolean);
   }
 
+  /**
+   * Tokens whose price is most stale, for the repricer.
+   *
+   * Ordered by when they were last PRICED, not last assayed — a market cap
+   * frozen at discovery is worse than no market cap, because it looks live.
+   */
+  stalestPriced(limit = 10): { token: string; poolId: string }[] {
+    return this.db
+      .prepare(
+        `SELECT token, pool_id AS poolId FROM reports
+         ORDER BY COALESCE(priced_at, checked_at) ASC LIMIT ?`,
+      )
+      .all(limit) as { token: string; poolId: string }[];
+  }
+
+  /** Update just the price fields, leaving the verdict untouched. */
+  updatePrice(token: string, marketCap: number | null): void {
+    this.db
+      .prepare(`UPDATE reports SET market_cap = ?, priced_at = ? WHERE token = ?`)
+      .run(marketCap, Date.now(), token.toLowerCase());
+  }
+
   /** Most recent assay timestamp, for change detection on the stream. */
   latestCheckedAt(): number {
     const r = this.db
-      .prepare(`SELECT MAX(checked_at) AS t FROM reports`)
+      .prepare(`SELECT MAX(COALESCE(priced_at, checked_at)) AS t FROM reports`)
       .get() as { t: number | null } | undefined;
     return r?.t ?? 0;
   }

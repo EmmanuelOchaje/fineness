@@ -23,6 +23,10 @@
 
 export interface ApiReport {
   token: string;
+  name: string | null;
+  symbol: string | null;
+  logo: string | null;
+  marketCap: number | null;
   mark: string;
   score: number;
   verified: {

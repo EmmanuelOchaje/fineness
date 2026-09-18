@@ -25,6 +25,9 @@ import { Hallmark, markColor } from './Hallmark';
 
 export interface FeedRow {
   token: string;
+  name: string | null;
+  symbol: string | null;
+  logo: string | null;
   mark: string;
   score: number;
   isHoneypot: boolean;
@@ -33,11 +36,12 @@ export interface FeedRow {
   marketCap: number | null;
   flags: string[];
   checkedAt: number;
+  pricedAt: number;
 }
 
 type Conn = 'live' | 'retrying' | 'static';
 
-const GRID = '76px minmax(0, 1.4fr) 116px 108px 104px 96px 88px';
+const GRID = '76px 30px minmax(0, 1.5fr) 132px 104px 100px 92px 88px';
 
 /** Market-cap floors. "Any" is first and is the default — see the note below. */
 const FLOORS = [
@@ -175,11 +179,12 @@ export function LiveFeed({
             }}
           >
             <div>Mark</div>
+            <div />
             <div>Token</div>
             <div style={{ textAlign: 'right' }}>Market cap</div>
             <div style={{ textAlign: 'right' }}>Token tax</div>
             <div style={{ textAlign: 'right' }}>Venue fee</div>
-            <div style={{ textAlign: 'right' }}>Assayed</div>
+            <div style={{ textAlign: 'right' }}>Priced</div>
             <div style={{ textAlign: 'right' }}>Verdict</div>
           </div>
 
@@ -203,19 +208,16 @@ export function LiveFeed({
               >
                 <Hallmark mark={r.mark} color={color} size="row" />
 
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
-                  <span className="mono" style={{ fontSize: 13, fontWeight: 600 }}>
-                    {r.token.slice(0, 6)}…{r.token.slice(-4)}
+                <TokenLogo src={r.logo} symbol={r.symbol} />
+
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, minWidth: 0 }}>
+                  <span
+                    className="mono"
+                    style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.04em' }}
+                  >
+                    {r.symbol ?? `${r.token.slice(0, 6)}…${r.token.slice(-4)}`}
                   </span>
-                  {isNew && (
-                    <span
-                      className="mono"
-                      style={{ fontSize: 9, letterSpacing: '0.18em', color: 'var(--early)' }}
-                    >
-                      NEW
-                    </span>
-                  )}
-                  {r.flags[0] && (
+                  {r.name && r.name !== r.symbol && (
                     <span
                       style={{
                         color: 'var(--faint)',
@@ -223,9 +225,23 @@ export function LiveFeed({
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
+                        minWidth: 0,
                       }}
                     >
-                      {r.flags[0]}
+                      {r.name}
+                    </span>
+                  )}
+                  {isNew && (
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 9,
+                        letterSpacing: '0.18em',
+                        color: 'var(--early)',
+                        flex: 'none',
+                      }}
+                    >
+                      NEW
                     </span>
                   )}
                 </div>
@@ -260,7 +276,7 @@ export function LiveFeed({
                   className="mono"
                   style={{ textAlign: 'right', fontSize: 13, color: 'var(--faint)' }}
                 >
-                  {since(r.checkedAt)}
+                  {since(r.pricedAt ?? r.checkedAt)}
                 </div>
 
                 <div
@@ -346,10 +362,71 @@ function EmptyFeed({ floor }: { floor: number }) {
   );
 }
 
+/**
+ * Market cap to two decimals.
+ *
+ * Rounding to "$3K" hid the thing that matters: whether the number is moving.
+ * Tokens here sit in the low thousands and shift by cents, so an abbreviated
+ * figure looked frozen even while the price changed. Only abbreviate past a
+ * million, where two decimals still carry the movement.
+ */
 function money(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `$${Math.round(n / 1_000)}K`;
-  return `$${Math.round(n).toLocaleString()}`;
+  return `$${n.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
+ * Token logo.
+ *
+ * Deployer-supplied and therefore context, never evidence — so it is small,
+ * square and quiet, and it never sits near the hallmark's visual weight. IPFS
+ * gateways are slow and frequently fail, so a failed load falls back to the
+ * symbol's initial rather than leaving a broken-image box.
+ */
+function TokenLogo({ src, symbol }: { src: string | null; symbol: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const initial = (symbol ?? '?').slice(0, 1).toUpperCase();
+
+  const box: React.CSSProperties = {
+    width: 22,
+    height: 22,
+    flex: 'none',
+    border: '1px solid var(--rule)',
+    background: 'var(--well)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  };
+
+  if (!src || failed) {
+    return (
+      <div style={box}>
+        <span className="mono" style={{ fontSize: 10, color: 'var(--faint)' }}>
+          {initial}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={box}>
+      {/* Plain img, not next/image: these are arbitrary third-party IPFS hosts
+          that cannot be enumerated in next.config. */}
+      <img
+        src={src}
+        alt=""
+        width={22}
+        height={22}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+      />
+    </div>
+  );
 }
 
 function since(ts: number): string {

@@ -70,13 +70,62 @@ export default async function ReportPage({
             />
             <div style={{ minWidth: 0, flex: '1 1 240px' }}>
               <div className="label">Assay report</div>
+
+              {/* Identity is deployer-supplied, so it sits here as a label on
+                  the report — never as part of the evidence below. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 }}>
+                {report.logo && (
+                  <img
+                    src={report.logo}
+                    alt=""
+                    width={34}
+                    height={34}
+                    style={{
+                      width: 34,
+                      height: 34,
+                      objectFit: 'cover',
+                      border: '1px solid var(--rule)',
+                      background: 'var(--well)',
+                      flex: 'none',
+                    }}
+                  />
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <div className="serif" style={{ fontSize: 24 }}>
+                    {report.name ?? 'Unnamed token'}
+                  </div>
+                  {report.symbol && (
+                    <div className="mono" style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3 }}>
+                      {report.symbol}
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div
                 className="mono"
-                style={{ fontSize: 15, marginTop: 10, wordBreak: 'break-all', lineHeight: 1.5 }}
+                style={{
+                  fontSize: 12,
+                  marginTop: 12,
+                  wordBreak: 'break-all',
+                  lineHeight: 1.5,
+                  color: 'var(--faint)',
+                }}
               >
                 {report.token}
               </div>
               <div style={{ marginTop: 16, display: 'flex', gap: 26, flexWrap: 'wrap' }}>
+                <Stat
+                  label="Market cap"
+                  value={
+                    report.marketCap === null
+                      ? '—'
+                      : `$${report.marketCap.toLocaleString('en-US', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}`
+                  }
+                />
                 <Stat label="Passed" value={`${a.passes} of ${a.checks.length}`} />
                 <Stat
                   label="Token tax"

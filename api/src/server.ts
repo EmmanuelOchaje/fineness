@@ -72,20 +72,29 @@ app.get<{ Querystring: { limit?: string; minScore?: string; minMcap?: string } }
     return {
       count: reports.length,
       latest: db.latestCheckedAt(),
-      tokens: reports.map((r) => ({
-        token: r.token,
-        mark: mark(r.score),
-        score: r.score,
-        isHoneypot: r.isHoneypot,
-        tokenTaxBps: r.buyTaxBps + r.sellTaxBps,
-        venueFeeBps: r.poolFeeBps + r.hookFeeBps,
-        marketCap: r.marketCap ?? null,
-        flags: r.flags,
-        checkedAt: r.checkedAt,
-      })),
+      tokens: reports.map(row),
     };
   },
 );
+
+/** Shared feed-row shape, so /tokens and /stream can never drift apart. */
+function row(r: import('../../indexer/src/db.js').StoredReport) {
+  return {
+    token: r.token,
+    name: r.name ?? null,
+    symbol: r.symbol ?? null,
+    logo: r.logo ?? null,
+    mark: mark(r.score),
+    score: r.score,
+    isHoneypot: r.isHoneypot,
+    tokenTaxBps: r.buyTaxBps + r.sellTaxBps,
+    venueFeeBps: r.poolFeeBps + r.hookFeeBps,
+    marketCap: r.marketCap ?? null,
+    flags: r.flags,
+    checkedAt: r.checkedAt,
+    pricedAt: r.pricedAt ?? r.checkedAt,
+  };
+}
 
 /**
  * GET /stream — Server-Sent Events.
@@ -101,7 +110,15 @@ app.get<{ Querystring: { limit?: string; minScore?: string; minMcap?: string } }
 app.get<{ Querystring: { minMcap?: string } }>('/stream', (req, reply) => {
   const minMcap = Number(req.query.minMcap ?? 0);
 
+  // Take the socket away from Fastify before writing to it directly. Without
+  // this, Fastify still owns the reply lifecycle and the stream never reaches
+  // the browser — the handler returns undefined and the response is finalised
+  // out from under the raw writes. This is why auto-refresh silently failed
+  // while `curl /stream` looked fine.
+  reply.hijack();
+
   reply.raw.writeHead(200, {
+    'Access-Control-Allow-Origin': '*',
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
@@ -111,33 +128,26 @@ app.get<{ Querystring: { minMcap?: string } }>('/stream', (req, reply) => {
   let lastSeen = 0;
 
   const push = () => {
+    if (reply.raw.writableEnded) return;
     const latest = db.latestCheckedAt();
     if (latest === lastSeen) {
       reply.raw.write(': keep-alive\n\n');
       return;
     }
     lastSeen = latest;
-    const rows = db.listReports(40, minMcap).map((r) => ({
-      token: r.token,
-      mark: mark(r.score),
-      score: r.score,
-      isHoneypot: r.isHoneypot,
-      tokenTaxBps: r.buyTaxBps + r.sellTaxBps,
-      venueFeeBps: r.poolFeeBps + r.hookFeeBps,
-      marketCap: r.marketCap ?? null,
-      flags: r.flags,
-      checkedAt: r.checkedAt,
-    }));
+    const rows = db.listReports(60, minMcap).map(row);
     reply.raw.write(`data: ${JSON.stringify({ latest, tokens: rows })}\n\n`);
   };
 
   push();
-  const timer = setInterval(push, 3000);
+  const timer = setInterval(push, 2000);
 
-  req.raw.on('close', () => {
+  const shutdown = () => {
     clearInterval(timer);
-    reply.raw.end();
-  });
+    if (!reply.raw.writableEnded) reply.raw.end();
+  };
+  req.raw.on('close', shutdown);
+  req.raw.on('error', shutdown);
 });
 
 /**
@@ -197,6 +207,10 @@ app.get<{ Params: { address: string } }>('/tokens/:address', async (req, reply) 
 
   return {
     token: address,
+    name: cached!.name ?? null,
+    symbol: cached!.symbol ?? null,
+    logo: cached!.logo ?? null,
+    marketCap: cached!.marketCap ?? null,
     mark: mark(cached!.score),
     score: cached!.score,
 

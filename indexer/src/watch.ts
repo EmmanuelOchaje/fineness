@@ -35,12 +35,24 @@ import { Db, defaultDbPath } from './db.js';
 import { discoverPools, type DiscoveredPool } from './pools.js';
 import { Oracle, marketCapUsd } from './oracle.js';
 import { buildHolderSnapshot } from './holders.js';
+import { fetchTokenMeta } from './metadata.js';
 
 const POLL_MS = Number(process.env.WATCH_POLL_MS ?? 6000);
 const CONCURRENCY = Number(process.env.WATCH_CONCURRENCY ?? 4);
 const MAX_QUEUE = Number(process.env.WATCH_MAX_QUEUE ?? 200);
 const STALE_MS = Number(process.env.WATCH_STALE_MS ?? 20 * 60 * 1000);
 const CURSOR_KEY = 'pools';
+
+/**
+ * How often to re-price already-assayed tokens, and how many per pass.
+ *
+ * A market cap captured once at discovery and never updated is worse than none
+ * at all: it looks live and is not. The verdict is expensive and rarely
+ * changes; the price moves every block. So they refresh on different cadences —
+ * the repricer re-runs only the probe and touches nothing else.
+ */
+const REPRICE_MS = Number(process.env.WATCH_REPRICE_MS ?? 15_000);
+const REPRICE_BATCH = Number(process.env.WATCH_REPRICE_BATCH ?? 6);
 
 /** Cap the catch-up window so a long outage does not stall the watcher. */
 const MAX_CATCHUP_BLOCKS = 20_000n;
@@ -105,6 +117,12 @@ class Watcher {
       console.log('\nstopping…');
     });
 
+    const repricer = setInterval(() => {
+      void this.reprice().catch(() => {
+        // Repricing is best-effort; discovery must keep running regardless.
+      });
+    }, REPRICE_MS);
+
     while (!this.stopping) {
       try {
         await this.tick();
@@ -117,6 +135,7 @@ class Watcher {
       await sleep(POLL_MS);
     }
 
+    clearInterval(repricer);
     this.db.close();
   }
 
@@ -199,15 +218,16 @@ class Watcher {
   private async assay(pool: DiscoveredPool): Promise<void> {
     const r = await this.oracle.check(pool);
 
-    let mcap: number | null = null;
+    const mcap = await this.priceOf(pool, r.usdcProbed, r.tokensOut);
+
+    // Name, symbol and logo. Deployer-controlled, so this is context and never
+    // touches the score — it exists so a trader can recognise the token.
+    // Failing to fetch it must not lose the verdict, hence the soft failure.
+    let meta = { name: null as string | null, symbol: null as string | null, logo: null as string | null };
     try {
-      const supply = await this.rpc.call<string>('eth_call', [
-        { to: pool.token, data: '0x18160ddd' },
-        'latest',
-      ]);
-      mcap = marketCapUsd(r.usdcProbed, r.tokensOut, BigInt(supply));
+      meta = await fetchTokenMeta(this.rpc, pool.token!);
     } catch {
-      // null means unknown, and is reported as NOT_COMPUTED downstream.
+      // Keep the verdict; the row simply shows its address.
     }
 
     this.db.saveReport({
@@ -228,6 +248,10 @@ class Watcher {
       checkedAt: Date.now(),
       marketCap: mcap,
       initBlock: Number(pool.blockNumber),
+      name: meta.name,
+      symbol: meta.symbol,
+      logo: meta.logo,
+      pricedAt: Date.now(),
     });
 
     // Holder snapshot alongside, since concentration is meaningless without a
@@ -244,10 +268,52 @@ class Watcher {
     this.assayed++;
     const mark = `.${String(r.score).padStart(3, '0')}`.slice(0, 4);
     const cap = mcap === null ? 'mcap ?' : `$${Math.round(mcap).toLocaleString()}`;
+    const label = meta.symbol ?? r.token.slice(0, 10);
     console.log(
-      `  ${mark} ${r.token} ${r.isHoneypot ? 'HONEYPOT' : 'ok'} ${cap}` +
+      `  ${mark} ${label.padEnd(12)} ${r.isHoneypot ? 'HONEYPOT' : 'ok'} ${cap}` +
         `  [assayed ${this.assayed}, dropped ${this.dropped}]`,
     );
+  }
+
+  /** Realised price from the probe, times supply. Null means unknown. */
+  private async priceOf(
+    pool: DiscoveredPool,
+    usdcProbed: bigint,
+    tokensOut: bigint,
+  ): Promise<number | null> {
+    try {
+      const supply = await this.rpc.call<string>('eth_call', [
+        { to: pool.token, data: '0x18160ddd' },
+        'latest',
+      ]);
+      return marketCapUsd(usdcProbed, tokensOut, BigInt(supply));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Refresh the market cap of the tokens priced longest ago.
+   *
+   * Runs the simulator probe only — the verdict is left alone, because
+   * ownership and hook permissions do not change between blocks while price
+   * does. Rotating through the stalest keeps every row moving without
+   * re-assaying the whole table.
+   */
+  private async reprice(): Promise<void> {
+    const targets = this.db.stalestPriced(REPRICE_BATCH);
+    for (const t of targets) {
+      const pool = this.db.getPoolByToken(t.token);
+      if (!pool?.token) continue;
+      try {
+        const r = await this.oracle.check(pool);
+        this.db.updatePrice(t.token, await this.priceOf(pool, r.usdcProbed, r.tokensOut));
+      } catch {
+        // Stamp the attempt so a permanently unpriceable token does not jam
+        // the rotation at the front of the queue forever.
+        this.db.updatePrice(t.token, null);
+      }
+    }
   }
 }
 
