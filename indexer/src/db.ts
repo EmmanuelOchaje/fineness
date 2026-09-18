@@ -25,6 +25,8 @@ export interface StoredReport {
   token: string;
   poolId: string;
   score: number;
+  grade?: number | null;
+  firstSeen?: number | null;
   isHoneypot: boolean;
   buyTaxBps: number;
   sellTaxBps: number;
@@ -109,6 +111,20 @@ export class Db {
         checked_at       INTEGER NOT NULL
       );
 
+      /**
+       * Price samples, for detecting surges.
+       *
+       * A token a trader scrolled past is gone forever unless something brings
+       * it back. Storing a short price history lets the feed resurface one that
+       * has since moved, so a decision deferred is not a decision lost.
+       */
+      CREATE TABLE IF NOT EXISTS price_history (
+        token       TEXT NOT NULL,
+        market_cap  REAL NOT NULL,
+        at          INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_price_token_at ON price_history(token, at DESC);
+
       CREATE TABLE IF NOT EXISTS cursor (
         key              TEXT PRIMARY KEY,
         block            INTEGER NOT NULL
@@ -126,6 +142,11 @@ export class Db {
       // expensive and stable; the price moves every block. Tracking them
       // separately lets the repricer refresh one without redoing the other.
       ['priced_at', 'INTEGER'],
+      ['grade', 'INTEGER'],
+      // When we FIRST assayed this token, never overwritten. A resurfaced row
+      // has to be able to say "you saw this 3 hours ago", and checked_at moves
+      // on every re-assay so it cannot answer that.
+      ['first_seen', 'INTEGER'],
     ]) {
       try {
         this.db.exec(`ALTER TABLE reports ADD COLUMN ${col} ${type}`);
@@ -198,8 +219,9 @@ export class Db {
         `INSERT INTO reports (token, pool_id, score, is_honeypot, buy_tax_bps,
            sell_tax_bps, pool_fee_bps, hook_fee_bps, hook_permissions,
            hook_intercepts, ownership_renounced, may_be_upgradeable, dynamic_fee,
-           flags, checked_at, market_cap, init_block, name, symbol, logo, priced_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           flags, checked_at, market_cap, init_block, name, symbol, logo, priced_at,
+           grade, first_seen)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(token) DO UPDATE SET
            score=excluded.score, is_honeypot=excluded.is_honeypot,
            buy_tax_bps=excluded.buy_tax_bps, sell_tax_bps=excluded.sell_tax_bps,
@@ -213,6 +235,9 @@ export class Db {
            init_block=excluded.init_block, priced_at=excluded.priced_at,
            -- Metadata is only overwritten when the new value is non-null, so a
            -- transient IPFS or RPC failure cannot erase a name we already have.
+           grade=excluded.grade,
+           -- COALESCE keeps the ORIGINAL sighting: first_seen is set once.
+           first_seen=COALESCE(reports.first_seen, excluded.first_seen),
            name=COALESCE(excluded.name, reports.name),
            symbol=COALESCE(excluded.symbol, reports.symbol),
            logo=COALESCE(excluded.logo, reports.logo)`,
@@ -226,6 +251,8 @@ export class Db {
         r.marketCap ?? null, r.initBlock ?? null,
         r.name ?? null, r.symbol ?? null, r.logo ?? null,
         r.pricedAt ?? r.checkedAt,
+        r.grade ?? null,
+        r.firstSeen ?? r.checkedAt,
       );
   }
 
@@ -256,6 +283,8 @@ export class Db {
       symbol: (r.symbol as string | null) ?? null,
       logo: (r.logo as string | null) ?? null,
       pricedAt: (r.priced_at as number | null) ?? null,
+      grade: (r.grade as number | null) ?? null,
+      firstSeen: (r.first_seen as number | null) ?? (r.checked_at as number),
     };
   }
 
@@ -290,9 +319,45 @@ export class Db {
 
   /** Update just the price fields, leaving the verdict untouched. */
   updatePrice(token: string, marketCap: number | null): void {
+    const now = Date.now();
     this.db
       .prepare(`UPDATE reports SET market_cap = ?, priced_at = ? WHERE token = ?`)
-      .run(marketCap, Date.now(), token.toLowerCase());
+      .run(marketCap, now, token.toLowerCase());
+    if (marketCap !== null) this.recordPrice(token, marketCap, now);
+  }
+
+  recordPrice(token: string, marketCap: number, at = Date.now()): void {
+    this.db
+      .prepare(`INSERT INTO price_history (token, market_cap, at) VALUES (?,?,?)`)
+      .run(token.toLowerCase(), marketCap, at);
+  }
+
+  /**
+   * Percentage change over a window, or null when there is no comparable
+   * sample. Null means "not enough history", never 0% — a token we have only
+   * just met has not been flat, it has been unobserved.
+   */
+  priceChangePct(token: string, windowMs: number): number | null {
+    const since = Date.now() - windowMs;
+    const row = this.db
+      .prepare(
+        `SELECT market_cap AS old FROM price_history
+         WHERE token = ? AND at <= ? ORDER BY at DESC LIMIT 1`,
+      )
+      .get(token.toLowerCase(), since) as { old: number } | undefined;
+    if (!row || row.old <= 0) return null;
+
+    const cur = this.db
+      .prepare(`SELECT market_cap AS c FROM reports WHERE token = ?`)
+      .get(token.toLowerCase()) as { c: number | null } | undefined;
+    if (!cur?.c) return null;
+
+    return ((cur.c - row.old) / row.old) * 100;
+  }
+
+  /** Keep the history bounded; this is a live feed, not an archive. */
+  prunePriceHistory(olderThanMs = 6 * 60 * 60 * 1000): void {
+    this.db.prepare(`DELETE FROM price_history WHERE at < ?`).run(Date.now() - olderThanMs);
   }
 
   /** Most recent assay timestamp, for change detection on the stream. */

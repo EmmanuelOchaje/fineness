@@ -146,10 +146,17 @@ export function markFor(score: number | null): string | null {
   return `.${String(Math.max(0, Math.min(999, score))).padStart(3, '0')}`;
 }
 
-export function markColor(score: number | null, isHoneypot: boolean): string {
-  if (isHoneypot || score === 0) return 'var(--fail)';
-  if (score === null) return 'var(--early)';
-  if (score >= 750) return 'var(--pass)';
-  if (score >= 500) return 'var(--ink)';
+/**
+ * Colour by discrete grade.
+ *
+ *   3 (.999) passes, 2 (.750) is unremarkable ink, 1 (.500) warns,
+ *   0 (.000) fails. null means no mark could be struck.
+ */
+export function markColor(grade: number | null, isHoneypot: boolean): string {
+  if (isHoneypot) return 'var(--fail)';
+  if (grade === null) return 'var(--early)';
+  if (grade >= 3) return 'var(--pass)';
+  if (grade === 2) return 'var(--ink)';
+  if (grade === 1) return 'var(--early)';
   return 'var(--fail)';
 }

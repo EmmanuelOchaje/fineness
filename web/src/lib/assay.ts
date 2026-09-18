@@ -28,6 +28,8 @@ export interface ApiReport {
   logo: string | null;
   marketCap: number | null;
   mark: string;
+  grade: number;
+  changePct: number | null;
   score: number;
   verified: {
     isHoneypot: boolean;
@@ -190,7 +192,7 @@ export function assay(r: ApiReport): Assay {
     hardFail,
     // A honeypot is .000 regardless of what else passed — you cannot get out.
     // Otherwise, below the data floor no mark is struck at all.
-    mark: hardFail ? '.000' : early ? null : `.${String(r.score).padStart(3, '0')}`,
+    mark: hardFail ? '.000' : early ? null : r.mark,
   };
 }
 

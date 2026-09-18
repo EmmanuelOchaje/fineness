@@ -40,8 +40,15 @@ export function marketCapUsd(
   return Number(capMicro) / 1e6;
 }
 
+
+/** Discrete assay marks. Index is the on-chain grade. */
+export const MARKS = ['.000', '.500', '.750', '.999'] as const;
+export function markFor(grade: number | null | undefined): string {
+  return MARKS[grade ?? 0] ?? '.000';
+}
+
 /** Deterministic CREATE2 address, salt keccak256("fineness.simulator.v1"). */
-export const SIMULATOR_ADDRESS = '0x880067680E32b27644ea82B62969eF074Fd85093';
+export const SIMULATOR_ADDRESS = '0x7bf235ff217D11CF629367FF7be5533F49a44408';
 
 /** Arbitrary address used only when injecting an undeployed Fineness. */
 export const INJECTED_FINENESS = '0x00000000000000000000000000000000F19e5555';
@@ -55,7 +62,7 @@ export const REPORT_TUPLE = [
     components: [
       { name: 'token', type: 'address' },
       { name: 'isHoneypot', type: 'bool' },
-      { name: 'score', type: 'uint16' },
+      { name: 'grade', type: 'uint8' },
       { name: 'buyTaxBps', type: 'uint16' },
       { name: 'sellTaxBps', type: 'uint16' },
       { name: 'roundTripLossBps', type: 'uint16' },
@@ -66,6 +73,9 @@ export const REPORT_TUPLE = [
       { name: 'hasOwnerFunction', type: 'bool' },
       { name: 'ownershipRenounced', type: 'bool' },
       { name: 'mayBeUpgradeable', type: 'bool' },
+      { name: 'minimalProxy', type: 'bool' },
+      { name: 'ownerHasPowers', type: 'bool' },
+      { name: 'implementation', type: 'address' },
       { name: 'hook', type: 'address' },
       { name: 'hookPermissions', type: 'uint16' },
       { name: 'hookBeyondBaseline', type: 'uint16' },
@@ -104,7 +114,7 @@ const CHECK_ABI = [
 export interface OracleReport {
   token: string;
   isHoneypot: boolean;
-  score: number;
+  grade: number;
   buyTaxBps: number;
   sellTaxBps: number;
   roundTripLossBps: number;
@@ -115,6 +125,9 @@ export interface OracleReport {
   hasOwnerFunction: boolean;
   ownershipRenounced: boolean;
   mayBeUpgradeable: boolean;
+  minimalProxy: boolean;
+  ownerHasPowers: boolean;
+  implementation: string;
   hook: string;
   hookPermissions: number;
   hookBeyondBaseline: number;

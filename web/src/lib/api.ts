@@ -10,7 +10,7 @@ const BASE = process.env.FINENESS_API ?? 'http://127.0.0.1:8080';
 
 export type { FeedRow } from '@/components/LiveFeed';
 
-export async function getFeed(limit = 50): Promise<import('@/components/LiveFeed').FeedRow[]> {
+export async function getFeed(limit = 100): Promise<import('@/components/LiveFeed').FeedRow[]> {
   try {
     const res = await fetch(`${BASE}/tokens?limit=${limit}`, { cache: 'no-store' });
     if (!res.ok) return [];

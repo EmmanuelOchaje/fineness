@@ -12,7 +12,7 @@ import { LiveFeed } from '@/components/LiveFeed';
 export const dynamic = 'force-dynamic';
 
 export default async function FeedPage() {
-  const rows = await getFeed(60);
+  const rows = await getFeed(100);
   // The browser talks to the API directly for the stream, so it needs a URL
   // reachable from the client, not from the server process.
   const apiBase = process.env.NEXT_PUBLIC_FINENESS_API ?? 'http://127.0.0.1:8080';

@@ -15,6 +15,20 @@ import { Oracle } from '../../indexer/src/oracle.js';
 import { analyzeHook } from '@fineness/shared';
 
 const REPORT_TTL_MS = 5 * 60 * 1000;
+
+/** How many rows the feed carries. */
+const FEED_SIZE = 100;
+
+/**
+ * Surge detection.
+ *
+ * A token you scrolled past is gone unless something brings it back — and the
+ * one you skipped at $3k is exactly the one worth a second look at $30k. A
+ * token that has moved more than this over the window is resurfaced into the
+ * feed regardless of how old it is, so a deferred decision is not a lost one.
+ */
+const SURGE_WINDOW_MS = Number(process.env.SURGE_WINDOW_MS ?? 15 * 60 * 1000);
+const SURGE_PCT = Number(process.env.SURGE_PCT ?? 25);
 const PORT = Number(process.env.PORT ?? 8080);
 
 const db = new Db(process.env.DATABASE_PATH ?? defaultDbPath());
@@ -43,9 +57,15 @@ app.addHook('onRequest', async (_req, reply) => {
   reply.header('Access-Control-Allow-Headers', '*');
 });
 
-/** The fineness mark: a score of 0-1000 rendered as an assay hallmark. */
-function mark(score: number): string {
-  return `.${String(Math.max(0, Math.min(1000, score))).padStart(3, '0')}`.slice(0, 4);
+/**
+ * The fineness mark, as a discrete standard.
+ *
+ * Real assay marks are legal grades, not a continuum — silver is .925 sterling
+ * or it is not. The grade comes from the contract; this only renders it.
+ */
+const MARKS = ['.000', '.500', '.750', '.999'] as const;
+function mark(grade: number | null | undefined): string {
+  return MARKS[grade ?? 0] ?? '.000';
 }
 
 app.get('/health', async () => ({ ok: true, chain: 5042 }));
@@ -60,13 +80,13 @@ app.get('/health', async () => ({ ok: true, chain: 5042 }));
 app.get<{ Querystring: { limit?: string; minScore?: string; minMcap?: string } }>(
   '/tokens',
   async (req) => {
-    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const limit = Math.min(Number(req.query.limit ?? FEED_SIZE), 200);
     const minScore = Number(req.query.minScore ?? 0);
     const minMcap = Number(req.query.minMcap ?? 0);
 
     const reports = db
       .listReports(limit * 2, minMcap)
-      .filter((r) => r.score >= minScore)
+      .filter((r) => (r.grade ?? 0) >= minScore)
       .slice(0, limit);
 
     return {
@@ -79,12 +99,22 @@ app.get<{ Querystring: { limit?: string; minScore?: string; minMcap?: string } }
 
 /** Shared feed-row shape, so /tokens and /stream can never drift apart. */
 function row(r: import('../../indexer/src/db.js').StoredReport) {
+  // null means not enough history yet — never rendered as 0%, because a token
+  // we have only just met has not been flat, it has been unobserved.
+  const change = db.priceChangePct(r.token, SURGE_WINDOW_MS);
   return {
     token: r.token,
     name: r.name ?? null,
     symbol: r.symbol ?? null,
     logo: r.logo ?? null,
-    mark: mark(r.score),
+    mark: mark(r.grade),
+    grade: r.grade ?? 0,
+    changePct: change,
+    surging: change !== null && change >= SURGE_PCT,
+    // How long this token has been in the feed. A surging row is one you have
+    // most likely already scrolled past once, so it must announce itself as
+    // returning rather than new — otherwise it reads as a fresh launch.
+    firstSeen: r.firstSeen ?? r.checkedAt,
     score: r.score,
     isHoneypot: r.isHoneypot,
     tokenTaxBps: r.buyTaxBps + r.sellTaxBps,
@@ -135,7 +165,7 @@ app.get<{ Querystring: { minMcap?: string } }>('/stream', (req, reply) => {
       return;
     }
     lastSeen = latest;
-    const rows = db.listReports(60, minMcap).map(row);
+    const rows = db.listReports(FEED_SIZE, minMcap).map(row);
     reply.raw.write(`data: ${JSON.stringify({ latest, tokens: rows })}\n\n`);
   };
 
@@ -178,7 +208,8 @@ app.get<{ Params: { address: string } }>('/tokens/:address', async (req, reply) 
       db.saveReport({
         token: fresh.token,
         poolId: pool.poolId,
-        score: fresh.score,
+        score: fresh.grade,
+        grade: fresh.grade,
         isHoneypot: fresh.isHoneypot,
         buyTaxBps: fresh.buyTaxBps,
         sellTaxBps: fresh.sellTaxBps,
@@ -211,8 +242,9 @@ app.get<{ Params: { address: string } }>('/tokens/:address', async (req, reply) 
     symbol: cached!.symbol ?? null,
     logo: cached!.logo ?? null,
     marketCap: cached!.marketCap ?? null,
-    mark: mark(cached!.score),
-    score: cached!.score,
+    mark: mark(cached!.grade),
+    grade: cached!.grade ?? 0,
+    changePct: db.priceChangePct(address, SURGE_WINDOW_MS),
 
     // Everything under here is deterministic and provable on-chain.
     verified: {

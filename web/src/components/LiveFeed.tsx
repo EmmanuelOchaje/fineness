@@ -29,6 +29,12 @@ export interface FeedRow {
   symbol: string | null;
   logo: string | null;
   mark: string;
+  grade: number;
+  /** null = not enough history yet. Never render as 0%. */
+  changePct: number | null;
+  surging: boolean;
+  /** First time we assayed it — what makes a resurfaced row "not new". */
+  firstSeen: number;
   score: number;
   isHoneypot: boolean;
   tokenTaxBps: number;
@@ -41,7 +47,7 @@ export interface FeedRow {
 
 type Conn = 'live' | 'retrying' | 'static';
 
-const GRID = '76px 30px minmax(0, 1.5fr) 132px 104px 100px 92px 88px';
+const GRID = '76px 30px minmax(0, 1.4fr) 132px 92px 96px 88px 84px';
 
 /** Market-cap floors. "Any" is first and is the default — see the note below. */
 const FLOORS = [
@@ -105,12 +111,23 @@ export function LiveFeed({
     return () => es.close();
   }, [apiBase, floor]);
 
-  const visible =
+  const filtered =
     floor === 0
       ? rows
       : // Unknown market cap is kept, not hidden. Hiding it would quietly
         // shrink the feed and imply those tokens failed the filter.
         rows.filter((r) => r.marketCap === null || r.marketCap >= floor);
+
+  // Surging tokens are lifted to the top, whatever their age.
+  //
+  // Without this the feed is purely chronological, so a token you scrolled past
+  // is gone for good — including the one that has since tripled. Resurfacing it
+  // is the difference between a decision deferred and a decision lost.
+  const visible = [...filtered].sort((a, b) => {
+    if (a.surging !== b.surging) return a.surging ? -1 : 1;
+    return 0;
+  });
+  const surgeCount = filtered.filter((r) => r.surging).length;
 
   return (
     <>
@@ -135,7 +152,14 @@ export function LiveFeed({
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
-          <ConnBadge conn={conn} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {surgeCount > 0 && (
+              <span className="mono" style={{ fontSize: 9.5, letterSpacing: '0.16em', color: 'var(--pass)' }}>
+                ↻ {surgeCount} RETURNING
+              </span>
+            )}
+            <ConnBadge conn={conn} />
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span className="label" style={{ marginRight: 4 }}>
               Min market cap
@@ -182,15 +206,15 @@ export function LiveFeed({
             <div />
             <div>Token</div>
             <div style={{ textAlign: 'right' }}>Market cap</div>
-            <div style={{ textAlign: 'right' }}>Token tax</div>
-            <div style={{ textAlign: 'right' }}>Venue fee</div>
+            <div style={{ textAlign: 'right' }}>15m</div>
+            <div style={{ textAlign: 'right' }}>Exit cost</div>
             <div style={{ textAlign: 'right' }}>Priced</div>
             <div style={{ textAlign: 'right' }}>Verdict</div>
           </div>
 
           {visible.map((r) => {
             const isNew = fresh.has(r.token);
-            const color = markColor(r.score, r.isHoneypot);
+            const color = markColor(r.grade, r.isHoneypot);
             return (
               <Link
                 key={r.token}
@@ -203,7 +227,14 @@ export function LiveFeed({
                   padding: '10px 22px',
                   borderBottom: '1px solid var(--rule-soft)',
                   // The only marker for a new row: a rule, not a motion.
-                  boxShadow: isNew ? 'inset 2px 0 0 var(--early)' : undefined,
+                  // Two different reasons a row deserves attention, two
+                  // different rules. Surging wins, because it is the one you
+                  // may already have dismissed once.
+                  boxShadow: r.surging
+                    ? 'inset 2px 0 0 var(--pass)'
+                    : isNew
+                      ? 'inset 2px 0 0 var(--early)'
+                      : undefined,
                 }}
               >
                 <Hallmark mark={r.mark} color={color} size="row" />
@@ -231,7 +262,24 @@ export function LiveFeed({
                       {r.name}
                     </span>
                   )}
-                  {isNew && (
+                  {r.surging ? (
+                    // Explicitly "again", not "new". The whole point of
+                    // resurfacing is that you have probably seen this token
+                    // before and passed on it — saying NEW here would be a lie
+                    // and would make you evaluate it as a fresh launch.
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 9,
+                        letterSpacing: '0.18em',
+                        color: 'var(--pass)',
+                        flex: 'none',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      ↻ AGAIN · SEEN {since(r.firstSeen)} AGO
+                    </span>
+                  ) : isNew ? (
                     <span
                       className="mono"
                       style={{
@@ -243,7 +291,7 @@ export function LiveFeed({
                     >
                       NEW
                     </span>
-                  )}
+                  ) : null}
                 </div>
 
                 <div
@@ -254,22 +302,46 @@ export function LiveFeed({
                   {r.marketCap === null ? '—' : money(r.marketCap)}
                 </div>
 
+                {/* Movement since we last looked. This is what brings a token
+                    back into view after you scrolled past it. */}
                 <div
                   className="mono"
                   style={{
                     textAlign: 'right',
                     fontSize: 13,
-                    color: r.tokenTaxBps > 300 ? 'var(--fail)' : 'var(--dim)',
+                    color:
+                      r.changePct === null
+                        ? 'var(--faint)'
+                        : r.changePct >= 25
+                          ? 'var(--pass)'
+                          : r.changePct > 0
+                            ? 'var(--dim)'
+                            : r.changePct < 0
+                              ? 'var(--fail)'
+                              : 'var(--faint)',
                   }}
                 >
-                  {r.tokenTaxBps} bps
+                  {r.changePct === null
+                    ? '—'
+                    : `${r.changePct > 0 ? '+' : ''}${r.changePct.toFixed(1)}%`}
                 </div>
 
+                {/* Round-trip cost: what it takes to get in and back out.
+                    Coloured, because it now drives the mark. */}
                 <div
                   className="mono"
-                  style={{ textAlign: 'right', fontSize: 13, color: 'var(--faint)' }}
+                  style={{
+                    textAlign: 'right',
+                    fontSize: 13,
+                    color:
+                      r.venueFeeBps + r.tokenTaxBps >= 2000
+                        ? 'var(--fail)'
+                        : r.venueFeeBps + r.tokenTaxBps >= 600
+                          ? 'var(--early)'
+                          : 'var(--dim)',
+                  }}
                 >
-                  {r.venueFeeBps} bps
+                  {((r.venueFeeBps + r.tokenTaxBps) / 100).toFixed(1)}%
                 </div>
 
                 <div
@@ -285,10 +357,10 @@ export function LiveFeed({
                     textAlign: 'right',
                     fontSize: 10.5,
                     letterSpacing: '0.15em',
-                    color: r.isHoneypot ? 'var(--fail)' : color,
+                    color: r.isHoneypot || r.grade === 0 ? 'var(--fail)' : color,
                   }}
                 >
-                  {r.isHoneypot ? 'HONEYPOT' : r.score >= 750 ? 'CLEAN' : 'CAUTION'}
+                  {verdictFor(r)}
                 </div>
               </Link>
             );
@@ -296,12 +368,32 @@ export function LiveFeed({
 
           <div className="label" style={{ padding: '14px 22px', color: 'var(--faint)' }}>
             {visible.length} assayed
+            {surgeCount > 0 &&
+              ` · ${surgeCount} returning after a 15m surge — previously seen, not new`}
             {floor > 0 && ' · unpriced tokens included'}
           </div>
         </section>
       )}
     </>
   );
+}
+
+/**
+ * One word per grade. Each is a claim the checks can back, not a vibe:
+ * the mark and the word must never disagree.
+ */
+function verdictFor(r: FeedRow): string {
+  if (r.isHoneypot) return 'HONEYPOT';
+  switch (r.grade) {
+    case 3:
+      return 'CLEAN';
+    case 2:
+      return 'FAIR';
+    case 1:
+      return 'CAUTION';
+    default:
+      return 'FAIL';
+  }
 }
 
 function ConnBadge({ conn }: { conn: Conn }) {

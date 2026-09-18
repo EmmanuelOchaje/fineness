@@ -33,7 +33,7 @@
 import { ArcRpc } from './rpc.js';
 import { Db, defaultDbPath } from './db.js';
 import { discoverPools, type DiscoveredPool } from './pools.js';
-import { Oracle, marketCapUsd } from './oracle.js';
+import { Oracle, marketCapUsd, markFor } from './oracle.js';
 import { buildHolderSnapshot } from './holders.js';
 import { fetchTokenMeta } from './metadata.js';
 
@@ -233,7 +233,8 @@ class Watcher {
     this.db.saveReport({
       token: r.token,
       poolId: pool.poolId,
-      score: r.score,
+      score: r.grade,
+        grade: r.grade,
       isHoneypot: r.isHoneypot,
       buyTaxBps: r.buyTaxBps,
       sellTaxBps: r.sellTaxBps,
@@ -254,6 +255,9 @@ class Watcher {
       pricedAt: Date.now(),
     });
 
+    // Seed the price history so a surge can be measured from first sighting.
+    if (mcap !== null) this.db.recordPrice(r.token, mcap);
+
     // Holder snapshot alongside, since concentration is meaningless without a
     // market cap to judge it against.
     try {
@@ -266,7 +270,7 @@ class Watcher {
     }
 
     this.assayed++;
-    const mark = `.${String(r.score).padStart(3, '0')}`.slice(0, 4);
+    const mark = markFor(r.grade);
     const cap = mcap === null ? 'mcap ?' : `$${Math.round(mcap).toLocaleString()}`;
     const label = meta.symbol ?? r.token.slice(0, 10);
     console.log(
@@ -301,6 +305,7 @@ class Watcher {
    * re-assaying the whole table.
    */
   private async reprice(): Promise<void> {
+    this.db.prunePriceHistory();
     const targets = this.db.stalestPriced(REPRICE_BATCH);
     for (const t of targets) {
       const pool = this.db.getPoolByToken(t.token);

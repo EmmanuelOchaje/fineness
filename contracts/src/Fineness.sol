@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Simulator} from "./Simulator.sol";
 import {HookPermissions} from "./HookPermissions.sol";
+import {Authority} from "./Authority.sol";
 import {IPoolManager, IERC20Minimal, PoolKey, Currency} from "./interfaces/IPoolManager.sol";
 
 /**
@@ -40,7 +41,7 @@ contract Fineness {
      *      on any chain. The deploy script asserts the match and refuses to
      *      proceed if Simulator's bytecode changed without this being updated.
      */
-    Simulator public constant simulator = Simulator(0x880067680E32b27644ea82B62969eF074Fd85093);
+    Simulator public constant simulator = Simulator(0x7bf235ff217D11CF629367FF7be5533F49a44408);
     address public constant usdc = 0x3600000000000000000000000000000000000000;
 
     /**
@@ -67,11 +68,38 @@ contract Fineness {
 
     uint24 internal constant DYNAMIC_FEE_FLAG = 0x800000;
 
+    /**
+     * Exit-cost thresholds, in bps of a round trip.
+     *
+     * Measured across live Arc pools the spread is enormous — 60bps at the
+     * cheapest to over 6000bps at the worst — so this is the single most
+     * discriminating number available, and it was previously not scored at all.
+     */
+    uint16 internal constant EXIT_COST_NOTABLE = 600; // 6%
+    uint16 internal constant EXIT_COST_HIGH = 2000; //  20%
+    uint16 internal constant EXIT_COST_SEVERE = 5000; // 50%
+
     struct Report {
         address token;
         // --- the verdict ---
         bool isHoneypot;
-        uint16 score; // 0-1000, rendered as a fineness mark (.999 / .500 / .000)
+        /**
+         * The fineness mark, as a discrete standard.
+         *
+         * Real assay marks are legal standards, not a continuum: silver is .925
+         * sterling or it is not; there is no .913. An earlier version returned a
+         * weighted 0-1000 score, which manufactured precision the underlying
+         * measurements cannot support — the weights were invented and never
+         * calibrated against whether a token actually rugged.
+         *
+         *   3 = .999  sellable, cheap to exit, no privileged powers
+         *   2 = .750  sellable, one named issue
+         *   1 = .500  sellable but expensive, or the operator retains power
+         *   0 = .000  cannot sell, or exiting costs nearly everything
+         *
+         * Each grade maps to a specific measured fact, in `flags`.
+         */
+        uint8 grade;
         // --- taxes, kept separate on purpose ---
         uint16 buyTaxBps; // the TOKEN's transfer tax on the way in
         uint16 sellTaxBps; // the TOKEN's transfer tax on the way out
@@ -89,7 +117,13 @@ contract Fineness {
         // --- authority ---
         bool hasOwnerFunction;
         bool ownershipRenounced;
+        /** True only for a genuinely replaceable implementation. */
         bool mayBeUpgradeable;
+        /** EIP-1167 clone: immutable by construction, and NOT a fault. */
+        bool minimalProxy;
+        /** An owner exists AND a privileged function exists for it to call. */
+        bool ownerHasPowers;
+        address implementation;
         // --- the v4-specific checks ---
         address hook;
         uint16 hookPermissions;
@@ -182,22 +216,32 @@ contract Fineness {
         if (report.buyTaxBps >= 1000 || report.sellTaxBps >= 1000) {
             flags[n++] = "TOKEN TAX ABOVE 10%";
         }
-
-        // ---- 2. authority -------------------------------------------------
-        (report.hasOwnerFunction, report.ownershipRenounced) = _checkOwner(report.token);
-        if (report.hasOwnerFunction && !report.ownershipRenounced) {
-            flags[n++] = "OWNERSHIP NOT RENOUNCED";
+        // Exit cost is a first-class finding, not a footnote. A token you can
+        // technically sell but only at a 60% loss is closer to a honeypot than
+        // to a clean token, and the verdict now says so.
+        if (report.roundTripLossBps >= EXIT_COST_SEVERE) {
+            flags[n++] = "EXIT COSTS OVER HALF YOUR POSITION";
+        } else if (report.roundTripLossBps >= EXIT_COST_HIGH) {
+            flags[n++] = "EXPENSIVE TO EXIT";
         }
 
-        // NOTE: Solidity cannot read another contract's storage, so the EIP-1967
-        // admin slot cannot be read from here — that check runs off-chain via
-        // eth_getStorageAt in the API layer. What IS provable on-chain is
-        // whether the token's bytecode can delegatecall at all. A contract that
-        // cannot delegatecall cannot be a proxy; one that can is worth a closer
-        // look. Reported as a possibility, never as a verdict.
-        report.mayBeUpgradeable = _containsDelegatecall(report.token);
-        if (report.mayBeUpgradeable) {
-            flags[n++] = "MAY BE UPGRADEABLE - verify proxy admin off-chain";
+        // ---- 2. authority -------------------------------------------------
+        Authority.Report memory auth = Authority.inspect(report.token);
+        report.minimalProxy = auth.minimalProxy;
+        report.implementation = auth.implementation;
+        report.mayBeUpgradeable = auth.upgradeable;
+        report.ownerHasPowers = auth.ownerHasPowers;
+        report.hasOwnerFunction = auth.ownerRetained;
+        report.ownershipRenounced = !auth.ownerRetained;
+
+        // Only flag an owner that can actually DO something. A bare `owner()`
+        // getter with no privileged functions behind it is attribution, not
+        // authority, and penalising it flags most of the chain for nothing.
+        if (auth.ownerHasPowers) {
+            flags[n++] = "OWNER CAN ALTER TOKEN BEHAVIOUR";
+        }
+        if (auth.upgradeable) {
+            flags[n++] = "IMPLEMENTATION MAY BE REPLACEABLE";
         }
 
         // ---- 3. the v4 checks ---------------------------------------------
@@ -225,7 +269,7 @@ contract Fineness {
         }
 
         // ---- 4. the mark ---------------------------------------------------
-        report.score = _score(report);
+        report.grade = _grade(report);
 
         string[] memory trimmed = new string[](n);
         for (uint256 i; i < n; ++i) {
@@ -235,74 +279,34 @@ contract Fineness {
     }
 
     /**
-     * 0-1000, rendered as a fineness mark. Deductions are deliberately blunt:
-     * a mark that is hard to explain is a mark nobody trusts.
-     */
-    function _score(Report memory r) internal pure returns (uint16) {
-        if (r.isHoneypot) return 0; // cannot sell: nothing else matters
-
-        uint256 s = 1000;
-
-        uint256 tax = uint256(r.buyTaxBps) + uint256(r.sellTaxBps);
-        if (tax >= 2000) return 0; // >20% combined is predatory, full stop
-        s -= tax > 500 ? 400 : (tax * 400) / 500;
-
-        // A swap-intercepting hook is a heavy deduction, NOT an automatic zero.
-        //
-        // Measured across 121k Arc pools, ~5% carry BEFORE_SWAP permissions —
-        // that is 6,392 pools, far too many to be presumed malicious, and there
-        // are legitimate reasons to hold it (limit orders, dynamic pricing).
-        // Zeroing them all would repeat exactly the mistake this check was built
-        // to avoid: flagging a population instead of a behaviour.
-        //
-        // The round trip above is the actual proof. If the hook blocks selling,
-        // `isHoneypot` already returned 0 on its own evidence. This deduction
-        // says only "this pool COULD be turned into a honeypot by its operator
-        // without redeploying" — which is worth knowing and worth pricing, but
-        // is not the same claim.
-        if (r.hookCanInterceptSwap) s -= 350;
-        else if (r.hookBeyondBaseline != 0) s -= 100;
-
-        if (r.hasOwnerFunction && !r.ownershipRenounced) s -= 250;
-        if (r.mayBeUpgradeable) s -= 150;
-        if (r.dynamicFee) s -= 50;
-
-        return uint16(s);
-    }
-
-    /// @dev try/catch because plenty of legitimate tokens expose no `owner()`.
-    ///      Absence is not a fault; it is simply a different shape of contract.
-    function _checkOwner(address token) internal view returns (bool has, bool renounced) {
-        (bool ok, bytes memory data) =
-            token.staticcall(abi.encodeWithSignature("owner()"));
-        if (!ok || data.length < 32) return (false, false);
-        return (true, abi.decode(data, (address)) == address(0));
-    }
-
-    /**
-     * Scan the token's bytecode for DELEGATECALL (0xf4).
+     * The mark.
      *
-     * A heuristic, and labelled as one. It over-reports: 0xf4 can appear inside
-     * PUSH data rather than as an opcode, and plenty of non-proxy contracts
-     * delegatecall legitimately. It does not under-report, which is the
-     * direction that matters here — a contract with no DELEGATECALL in its code
-     * cannot be an upgradeable proxy.
+     * Deliberately discrete and deliberately blunt. Each step is a sentence a
+     * trader can act on, and every one of them traces to something measured
+     * rather than to a weight somebody chose.
      */
-    function _containsDelegatecall(address target) internal view returns (bool) {
-        uint256 size;
-        assembly {
-            size := extcodesize(target)
-        }
-        if (size == 0) return false;
+    function _grade(Report memory r) internal pure returns (uint8) {
+        // .000 — you cannot get out, or getting out costs nearly everything.
+        // Economically these are the same outcome, so they share a grade.
+        if (r.isHoneypot) return 0;
+        if (r.roundTripLossBps >= EXIT_COST_SEVERE) return 0;
+        if (uint256(r.buyTaxBps) + uint256(r.sellTaxBps) >= 2000) return 0;
 
-        bytes memory code = new bytes(size);
-        assembly {
-            extcodecopy(target, add(code, 0x20), 0, size)
-        }
-        for (uint256 i; i < size; ++i) {
-            if (code[i] == 0xf4) return true;
-        }
-        return false;
+        // .500 — you can get out, but it is expensive, or somebody retains the
+        // power to change the rules after you buy.
+        if (r.roundTripLossBps >= EXIT_COST_HIGH) return 1;
+        if (r.hookCanInterceptSwap) return 1;
+        if (r.ownerHasPowers) return 1;
+        if (r.mayBeUpgradeable) return 1;
+
+        // .750 — sellable and reasonably priced, with one thing worth naming.
+        if (r.roundTripLossBps >= EXIT_COST_NOTABLE) return 2;
+        if (r.dynamicFee) return 2;
+        if (r.hookBeyondBaseline != 0) return 2;
+        if (uint256(r.buyTaxBps) + uint256(r.sellTaxBps) > 0) return 2;
+
+        // .999 — nothing measured stands against it.
+        return 3;
     }
 
     function _bps(uint256 part, uint256 whole) internal pure returns (uint16) {

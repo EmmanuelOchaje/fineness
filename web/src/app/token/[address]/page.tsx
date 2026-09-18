@@ -32,7 +32,7 @@ export default async function ReportPage({
 
   const a = assay(report);
   const v = report.verified;
-  const color = markColor(a.early ? null : report.score, a.hardFail);
+  const color = markColor(a.early ? null : (report.grade ?? 0), a.hardFail);
 
   return (
     <main style={{ maxWidth: 1180, margin: '0 auto', minHeight: '100vh' }}>

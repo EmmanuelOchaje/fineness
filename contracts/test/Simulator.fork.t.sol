@@ -123,7 +123,7 @@ contract SimulatorForkTest is Test {
         Fineness.Report memory rep = fineness.check(_key(TOKEN_HOOKED, HOOK_BASELINE), 1_000_000);
 
         console.log("token            ", rep.token);
-        console.log("score            ", rep.score);
+        console.log("grade            ", rep.grade);
         console.log("isHoneypot       ", rep.isHoneypot);
         console.log("buyTaxBps        ", rep.buyTaxBps);
         console.log("sellTaxBps       ", rep.sellTaxBps);
@@ -132,6 +132,8 @@ contract SimulatorForkTest is Test {
         console.log("hookPermissions  ", rep.hookPermissions);
         console.log("ownershipRenounced", rep.ownershipRenounced);
         console.log("mayBeUpgradeable ", rep.mayBeUpgradeable);
+        console.log("minimalProxy     ", rep.minimalProxy);
+        console.log("ownerHasPowers   ", rep.ownerHasPowers);
         for (uint256 i; i < rep.flags.length; ++i) {
             console.log("  flag:", rep.flags[i]);
         }

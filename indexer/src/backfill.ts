@@ -6,7 +6,7 @@
 import { ArcRpc } from './rpc.js';
 import { Db, defaultDbPath } from './db.js';
 import { discoverPools } from './pools.js';
-import { Oracle, marketCapUsd } from './oracle.js';
+import { Oracle, marketCapUsd, markFor } from './oracle.js';
 import { buildHolderSnapshot } from './holders.js';
 
 const BLOCKS = BigInt(process.env.BACKFILL_BLOCKS ?? 3000);
@@ -37,7 +37,8 @@ async function main() {
     try {
       const r = await oracle.check(p);
       db.saveReport({
-        token: r.token, poolId: p.poolId, score: r.score, isHoneypot: r.isHoneypot,
+        token: r.token, poolId: p.poolId, score: r.grade,
+        grade: r.grade, isHoneypot: r.isHoneypot,
         buyTaxBps: r.buyTaxBps, sellTaxBps: r.sellTaxBps, poolFeeBps: r.poolFeeBps,
         hookFeeBps: r.hookFeeBps, hookPermissions: r.hookPermissions,
         hookCanInterceptSwap: r.hookCanInterceptSwap,
@@ -72,7 +73,7 @@ async function main() {
         // A failed holder scan leaves NOT_COMPUTED rather than a wrong verdict.
       }
 
-      const m = `.${String(r.score).padStart(3, '0')}`.slice(0, 4);
+      const m = markFor(r.grade);
       const cap = mcap === null ? 'mcap ?' : `mcap $${Math.round(mcap).toLocaleString()}`;
       console.log(`  ${m}  ${r.token}  honeypot=${r.isHoneypot}  hookFee=${r.hookFeeBps}bps  ${cap}  ${r.flags.join('; ') || 'clean'}`);
       ok++;
