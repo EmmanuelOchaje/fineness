@@ -8,22 +8,15 @@ import type { ApiReport } from './assay.js';
 
 const BASE = process.env.FINENESS_API ?? 'http://127.0.0.1:8080';
 
-export interface FeedRow {
-  token: string;
-  mark: string;
-  score: number;
-  isHoneypot: boolean;
-  tokenTaxBps: number;
-  venueFeeBps: number;
-  flags: string[];
-  checkedAt: number;
-}
+export type { FeedRow } from '@/components/LiveFeed';
 
-export async function getFeed(limit = 50): Promise<FeedRow[]> {
+export async function getFeed(limit = 50): Promise<import('@/components/LiveFeed').FeedRow[]> {
   try {
     const res = await fetch(`${BASE}/tokens?limit=${limit}`, { cache: 'no-store' });
     if (!res.ok) return [];
-    const body = (await res.json()) as { tokens: FeedRow[] };
+    const body = (await res.json()) as {
+      tokens: import('@/components/LiveFeed').FeedRow[];
+    };
     return body.tokens ?? [];
   } catch {
     // The feed must render even when the API is down. An empty feed is a

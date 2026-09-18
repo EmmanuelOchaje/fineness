@@ -37,6 +37,9 @@ export interface StoredReport {
   dynamicFee: boolean;
   flags: string[];
   checkedAt: number;
+  /** null = could not be derived. Never conflate with zero. */
+  marketCap?: number | null;
+  initBlock?: number | null;
 }
 
 export class Db {
@@ -83,7 +86,11 @@ export class Db {
         may_be_upgradeable  INTEGER NOT NULL,
         dynamic_fee      INTEGER NOT NULL,
         flags            TEXT NOT NULL,
-        checked_at       INTEGER NOT NULL
+        checked_at       INTEGER NOT NULL,
+        -- NULL means unknown, and must stay distinguishable from 0. A token
+        -- whose market cap we failed to derive is not a $0 token.
+        market_cap       REAL,
+        init_block       INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_reports_score ON reports(score DESC);
 
@@ -103,6 +110,15 @@ export class Db {
         block            INTEGER NOT NULL
       );
     `);
+
+    // Additive migrations for databases created before these columns existed.
+    for (const [col, type] of [['market_cap', 'REAL'], ['init_block', 'INTEGER']]) {
+      try {
+        this.db.exec(`ALTER TABLE reports ADD COLUMN ${col} ${type}`);
+      } catch {
+        // Already present.
+      }
+    }
   }
 
   upsertPool(p: DiscoveredPool): void {
@@ -168,8 +184,8 @@ export class Db {
         `INSERT INTO reports (token, pool_id, score, is_honeypot, buy_tax_bps,
            sell_tax_bps, pool_fee_bps, hook_fee_bps, hook_permissions,
            hook_intercepts, ownership_renounced, may_be_upgradeable, dynamic_fee,
-           flags, checked_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           flags, checked_at, market_cap, init_block)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(token) DO UPDATE SET
            score=excluded.score, is_honeypot=excluded.is_honeypot,
            buy_tax_bps=excluded.buy_tax_bps, sell_tax_bps=excluded.sell_tax_bps,
@@ -179,7 +195,8 @@ export class Db {
            ownership_renounced=excluded.ownership_renounced,
            may_be_upgradeable=excluded.may_be_upgradeable,
            dynamic_fee=excluded.dynamic_fee, flags=excluded.flags,
-           checked_at=excluded.checked_at`,
+           checked_at=excluded.checked_at, market_cap=excluded.market_cap,
+           init_block=excluded.init_block`,
       )
       .run(
         r.token.toLowerCase(), r.poolId, r.score, r.isHoneypot ? 1 : 0,
@@ -187,6 +204,7 @@ export class Db {
         r.hookCanInterceptSwap ? 1 : 0, r.ownershipRenounced ? 1 : 0,
         r.mayBeUpgradeable ? 1 : 0, r.dynamicFee ? 1 : 0,
         JSON.stringify(r.flags), r.checkedAt,
+        r.marketCap ?? null, r.initBlock ?? null,
       );
   }
 
@@ -211,14 +229,31 @@ export class Db {
       dynamicFee: r.dynamic_fee === 1,
       flags: JSON.parse(r.flags as string) as string[],
       checkedAt: r.checked_at as number,
+      marketCap: (r.market_cap as number | null) ?? null,
+      initBlock: (r.init_block as number | null) ?? null,
     };
   }
 
-  listReports(limit = 100): StoredReport[] {
+  listReports(limit = 100, minMarketCap = 0): StoredReport[] {
+    // A NULL market cap is unknown, not zero. When a floor is applied, unknown
+    // tokens are included rather than silently hidden — the feed says it could
+    // not price them instead of pretending they are worthless.
     const rows = this.db
-      .prepare(`SELECT token FROM reports ORDER BY checked_at DESC LIMIT ?`)
-      .all(limit) as { token: string }[];
+      .prepare(
+        `SELECT token FROM reports
+         WHERE ? = 0 OR market_cap IS NULL OR market_cap >= ?
+         ORDER BY checked_at DESC LIMIT ?`,
+      )
+      .all(minMarketCap, minMarketCap, limit) as { token: string }[];
     return rows.map((r) => this.getReport(r.token)!).filter(Boolean);
+  }
+
+  /** Most recent assay timestamp, for change detection on the stream. */
+  latestCheckedAt(): number {
+    const r = this.db
+      .prepare(`SELECT MAX(checked_at) AS t FROM reports`)
+      .get() as { t: number | null } | undefined;
+    return r?.t ?? 0;
   }
 
   saveHolders(s: HolderSnapshot): void {

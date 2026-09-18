@@ -35,6 +35,14 @@ const oracle = new Oracle(rpc, {
 
 const app = Fastify({ logger: true });
 
+// The web app runs on a different port, so the browser needs CORS to open the
+// SSE stream. Read-only service with no credentials, so a permissive origin is
+// safe here — there is nothing to steal and nothing to authorise.
+app.addHook('onRequest', async (_req, reply) => {
+  reply.header('Access-Control-Allow-Origin', '*');
+  reply.header('Access-Control-Allow-Headers', '*');
+});
+
 /** The fineness mark: a score of 0-1000 rendered as an assay hallmark. */
 function mark(score: number): string {
   return `.${String(Math.max(0, Math.min(1000, score))).padStart(3, '0')}`.slice(0, 4);
@@ -49,19 +57,21 @@ app.get('/health', async () => ({ ok: true, chain: 5042 }));
  * row: the context layer is lazy and detail-only, because a hanging social
  * fetch must never slow down or block a feed of verdicts.
  */
-app.get<{ Querystring: { limit?: string; minScore?: string } }>(
+app.get<{ Querystring: { limit?: string; minScore?: string; minMcap?: string } }>(
   '/tokens',
   async (req) => {
     const limit = Math.min(Number(req.query.limit ?? 50), 200);
     const minScore = Number(req.query.minScore ?? 0);
+    const minMcap = Number(req.query.minMcap ?? 0);
 
     const reports = db
-      .listReports(limit * 2)
+      .listReports(limit * 2, minMcap)
       .filter((r) => r.score >= minScore)
       .slice(0, limit);
 
     return {
       count: reports.length,
+      latest: db.latestCheckedAt(),
       tokens: reports.map((r) => ({
         token: r.token,
         mark: mark(r.score),
@@ -69,12 +79,66 @@ app.get<{ Querystring: { limit?: string; minScore?: string } }>(
         isHoneypot: r.isHoneypot,
         tokenTaxBps: r.buyTaxBps + r.sellTaxBps,
         venueFeeBps: r.poolFeeBps + r.hookFeeBps,
+        marketCap: r.marketCap ?? null,
         flags: r.flags,
         checkedAt: r.checkedAt,
       })),
     };
   },
 );
+
+/**
+ * GET /stream — Server-Sent Events.
+ *
+ * SSE rather than WebSocket: it is one-directional, which is all a feed needs,
+ * it survives proxies that mangle upgrade headers, and browsers reconnect on
+ * their own. A dropped feed that silently stops updating is the failure mode
+ * that matters here, and SSE's built-in retry handles it without custom code.
+ *
+ * Emits only when something actually changed, so an idle chain costs nothing
+ * beyond the keep-alive.
+ */
+app.get<{ Querystring: { minMcap?: string } }>('/stream', (req, reply) => {
+  const minMcap = Number(req.query.minMcap ?? 0);
+
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  let lastSeen = 0;
+
+  const push = () => {
+    const latest = db.latestCheckedAt();
+    if (latest === lastSeen) {
+      reply.raw.write(': keep-alive\n\n');
+      return;
+    }
+    lastSeen = latest;
+    const rows = db.listReports(40, minMcap).map((r) => ({
+      token: r.token,
+      mark: mark(r.score),
+      score: r.score,
+      isHoneypot: r.isHoneypot,
+      tokenTaxBps: r.buyTaxBps + r.sellTaxBps,
+      venueFeeBps: r.poolFeeBps + r.hookFeeBps,
+      marketCap: r.marketCap ?? null,
+      flags: r.flags,
+      checkedAt: r.checkedAt,
+    }));
+    reply.raw.write(`data: ${JSON.stringify({ latest, tokens: rows })}\n\n`);
+  };
+
+  push();
+  const timer = setInterval(push, 3000);
+
+  req.raw.on('close', () => {
+    clearInterval(timer);
+    reply.raw.end();
+  });
+});
 
 /**
  * GET /tokens/:address — the assay report.
