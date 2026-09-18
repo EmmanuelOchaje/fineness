@@ -169,7 +169,14 @@ app.get<{ Params: { address: string } }>('/tokens/:address', async (req, reply) 
             verdict: holders.verdict,
             reason: holders.reason,
           }
-        : { verdict: 'INSUFFICIENT_DATA', reason: 'No holder snapshot yet.' },
+        : {
+            // NOT_COMPUTED, never INSUFFICIENT_DATA. The first says we have not
+            // looked; the second says we looked and the token is too young to
+            // judge. Rendering them identically is the failure mode this whole
+            // product is built to avoid.
+            verdict: 'NOT_COMPUTED',
+            reason: 'Holder snapshot has not been built for this token yet.',
+          },
       flags: cached!.flags,
       checkedAt: cached!.checkedAt,
     },

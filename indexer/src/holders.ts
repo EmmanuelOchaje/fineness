@@ -22,7 +22,21 @@ import { TRANSFER_TOPIC, V4_POOL_MANAGER, BURN_ADDRESS } from '@fineness/shared'
 import { scanLogs } from './logs.js';
 import type { ArcRpc } from './rpc.js';
 
-export type ConcentrationVerdict = 'PASS' | 'WARN' | 'FAIL' | 'INSUFFICIENT_DATA';
+/**
+ * `INSUFFICIENT_DATA` and `NOT_COMPUTED` are deliberately distinct.
+ *
+ *   INSUFFICIENT_DATA — we looked, and the token is too young to judge honestly
+ *   NOT_COMPUTED      — we have not looked yet
+ *
+ * Collapsing these is the exact failure this product exists to avoid. "We
+ * checked and it's fine" and "we couldn't check" must never render the same.
+ */
+export type ConcentrationVerdict =
+  | 'PASS'
+  | 'WARN'
+  | 'FAIL'
+  | 'INSUFFICIENT_DATA'
+  | 'NOT_COMPUTED';
 
 export interface HolderSnapshot {
   token: Address;
@@ -63,8 +77,14 @@ export function thresholdFor(marketCapUsd: number): number {
 
 export function verdictFor(
   top10Share: number,
-  marketCapUsd: number,
+  marketCapUsd: number | null,
 ): { verdict: ConcentrationVerdict; reason: string } {
+  if (marketCapUsd === null) {
+    return {
+      verdict: 'NOT_COMPUTED',
+      reason: 'Market cap could not be determined, so concentration was not judged.',
+    };
+  }
   if (marketCapUsd < CONCENTRATION_CONFIG.insufficientDataBelowUsd) {
     return {
       verdict: 'INSUFFICIENT_DATA',
@@ -104,7 +124,7 @@ export async function buildHolderSnapshot(
   token: Address,
   fromBlock: bigint,
   toBlock: bigint,
-  marketCapUsd: number,
+  marketCapUsd: number | null,
 ): Promise<HolderSnapshot> {
   const balances = new Map<string, bigint>();
   const excluded = excludedAddresses();

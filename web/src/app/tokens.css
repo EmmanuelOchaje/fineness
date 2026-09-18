@@ -1,0 +1,98 @@
+/*
+ * Design tokens, lifted from the mockup in Fineness.html.
+ *
+ * The palette is deliberately almost monochrome. Colour appears only where it
+ * carries meaning — a verdict — and never for decoration. That restraint is the
+ * whole visual argument: this reads as a certificate of assay, not a trading
+ * terminal.
+ */
+
+:root {
+  /* Surfaces, near-black and barely separated. Depth comes from rules and
+     inset shadows rather than from lifting panels toward grey. */
+  --bg: #08090a;
+  --panel: #0a0c0d;
+  --panel-alt: #0b0d0e;
+  --raised: #0d1011;
+  --well: #101314;
+
+  /* Rules do the structural work. Two weights only. */
+  --rule: #1b1f22;
+  --rule-soft: #14181a;
+
+  /* Text, four steps. */
+  --ink: #e6e3dd;
+  --ink-bright: #fffdf7;
+  --dim: #8a8f92;
+  --muted: #7e8487;
+  --faint: #6e7477;
+
+  /* Verdict colours. oklch keeps them equally luminous, so no single verdict
+     shouts louder than another purely by being brighter. */
+  --pass: oklch(0.74 0.06 160);
+  --fail: oklch(0.62 0.13 25);
+  --early: oklch(0.82 0.09 85);
+
+  --fail-bg: #2a1215;
+  --fail-edge: #5c2b2e;
+  --fail-ink: #ff8a80;
+
+  --serif: "Instrument Serif", Georgia, serif;
+  --sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Every on-chain value is monospaced — addresses, amounts, bps, the mark.
+ * A number that came off the chain should look different from prose about it.
+ */
+.mono {
+  font-family: var(--mono);
+}
+
+/* Small caps-ish label used throughout: mono, tracked out, quiet. */
+.label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.serif {
+  font-family: var(--serif);
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.row-hover:hover {
+  background: var(--raised);
+}
+
+.chip:hover {
+  border-color: #3a4145;
+}
+
+::selection {
+  background: #23282b;
+  color: var(--ink-bright);
+}

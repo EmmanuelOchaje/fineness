@@ -18,6 +18,28 @@ import { decodeAbiParameters, encodeFunctionData } from 'viem';
 import type { ArcRpc } from './rpc.js';
 import type { DiscoveredPool } from './pools.js';
 
+/**
+ * Market cap in USD, derived from the probe.
+ *
+ * The simulator bought with `usdcProbed` and received `tokensOut`, so the
+ * realised price is usdcProbed/tokensOut — an execution price against real
+ * liquidity, not a quoted mid. Times total supply gives market cap.
+ *
+ * This number exists to gate the INSUFFICIENT_DATA rule on holder
+ * concentration. Returns null when it cannot be computed, and null must be
+ * treated as "unknown", never as zero.
+ */
+export function marketCapUsd(
+  usdcProbed: bigint,
+  tokensOut: bigint,
+  totalSupply: bigint,
+): number | null {
+  if (tokensOut === 0n || totalSupply === 0n) return null;
+  // usdcProbed is 6dp. Scale before dividing to keep precision.
+  const capMicro = (usdcProbed * totalSupply) / tokensOut;
+  return Number(capMicro) / 1e6;
+}
+
 /** Deterministic CREATE2 address, salt keccak256("fineness.simulator.v1"). */
 export const SIMULATOR_ADDRESS = '0x880067680E32b27644ea82B62969eF074Fd85093';
 
@@ -37,6 +59,8 @@ export const REPORT_TUPLE = [
       { name: 'buyTaxBps', type: 'uint16' },
       { name: 'sellTaxBps', type: 'uint16' },
       { name: 'roundTripLossBps', type: 'uint16' },
+      { name: 'usdcProbed', type: 'uint256' },
+      { name: 'tokensOut', type: 'uint256' },
       { name: 'poolFeeBps', type: 'uint16' },
       { name: 'hookFeeBps', type: 'uint16' },
       { name: 'hasOwnerFunction', type: 'bool' },
@@ -84,6 +108,8 @@ export interface OracleReport {
   buyTaxBps: number;
   sellTaxBps: number;
   roundTripLossBps: number;
+  usdcProbed: bigint;
+  tokensOut: bigint;
   poolFeeBps: number;
   hookFeeBps: number;
   hasOwnerFunction: boolean;

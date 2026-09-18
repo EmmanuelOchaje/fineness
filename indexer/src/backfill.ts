@@ -6,7 +6,8 @@
 import { ArcRpc } from './rpc.js';
 import { Db, defaultDbPath } from './db.js';
 import { discoverPools } from './pools.js';
-import { Oracle } from './oracle.js';
+import { Oracle, marketCapUsd } from './oracle.js';
+import { buildHolderSnapshot } from './holders.js';
 
 const BLOCKS = BigInt(process.env.BACKFILL_BLOCKS ?? 3000);
 
@@ -43,8 +44,37 @@ async function main() {
         ownershipRenounced: r.ownershipRenounced, mayBeUpgradeable: r.mayBeUpgradeable,
         dynamicFee: r.dynamicFee, flags: r.flags, checkedAt: Date.now(),
       });
+      // Market cap from the realised probe price, then the holder snapshot.
+      // Concentration is only meaningful relative to market cap, so the two
+      // have to be computed together or not at all.
+      let mcap: number | null = null;
+      try {
+        const supplyHex = await rpc.call<string>('eth_call', [
+          { to: p.token, data: '0x18160ddd' }, // totalSupply()
+          'latest',
+        ]);
+        mcap = marketCapUsd(r.usdcProbed, r.tokensOut, BigInt(supplyHex));
+      } catch {
+        // Leave null. Null means unknown and is reported as NOT_COMPUTED —
+        // never silently treated as zero, which would read as "too early".
+      }
+
+      try {
+        const snap = await buildHolderSnapshot(
+          rpc,
+          p.token!,
+          p.blockNumber,
+          head,
+          mcap,
+        );
+        db.saveHolders(snap);
+      } catch {
+        // A failed holder scan leaves NOT_COMPUTED rather than a wrong verdict.
+      }
+
       const m = `.${String(r.score).padStart(3, '0')}`.slice(0, 4);
-      console.log(`  ${m}  ${r.token}  honeypot=${r.isHoneypot}  hookFee=${r.hookFeeBps}bps  ${r.flags.join('; ') || 'clean'}`);
+      const cap = mcap === null ? 'mcap ?' : `mcap $${Math.round(mcap).toLocaleString()}`;
+      console.log(`  ${m}  ${r.token}  honeypot=${r.isHoneypot}  hookFee=${r.hookFeeBps}bps  ${cap}  ${r.flags.join('; ') || 'clean'}`);
       ok++;
     } catch (e) {
       // Most failures here are pools with no liquidity yet, which is a fact

@@ -76,6 +76,14 @@ contract Fineness {
         uint16 buyTaxBps; // the TOKEN's transfer tax on the way in
         uint16 sellTaxBps; // the TOKEN's transfer tax on the way out
         uint16 roundTripLossBps; // total cost of a round trip
+        // Probe results, surfaced so callers can derive a price without a
+        // second simulation. price = usdcProbed / tokensOut, and market cap is
+        // that times totalSupply. Market cap gates the INSUFFICIENT_DATA rule
+        // on holder concentration, so without it the off-chain layer cannot
+        // tell "too early to judge" from "not yet computed" — two states that
+        // must never be conflated.
+        uint256 usdcProbed;
+        uint256 tokensOut;
         uint16 poolFeeBps; // the pool's own fee tier, both legs
         uint16 hookFeeBps; // the HOOK's cut - launchpad economics, not the token's
         // --- authority ---
@@ -133,6 +141,8 @@ contract Fineness {
         // ---- 1. the round trip -------------------------------------------
         Simulator.SimResult memory sim = simulator.simulate(key, usdcAmount);
 
+        report.usdcProbed = sim.usdcSent;
+        report.tokensOut = sim.tokensReceived;
         report.isHoneypot = !sim.sellSucceeded;
         if (report.isHoneypot) {
             flags[n++] = string.concat("CANNOT SELL: ", sim.failureReason);
