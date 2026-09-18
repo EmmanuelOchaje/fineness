@@ -36,6 +36,17 @@ import { discoverPools, type DiscoveredPool } from './pools.js';
 import { Oracle, marketCapUsd, markFor } from './oracle.js';
 import { buildHolderSnapshot } from './holders.js';
 import { fetchTokenMeta } from './metadata.js';
+import { scanLogs } from './logs.js';
+import { V4_POOL_MANAGER } from '@fineness/shared';
+
+/**
+ * Swap(PoolId indexed id, address indexed sender, int128, int128, uint160,
+ *      uint128, int24, uint24)
+ *
+ * Pool id is topic1, so swaps can be tallied per pool from a single scan of
+ * the PoolManager across the block range we already fetch for discovery.
+ */
+const SWAP_TOPIC = '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f';
 
 const POLL_MS = Number(process.env.WATCH_POLL_MS ?? 6000);
 const CONCURRENCY = Number(process.env.WATCH_CONCURRENCY ?? 4);
@@ -51,8 +62,9 @@ const CURSOR_KEY = 'pools';
  * changes; the price moves every block. So they refresh on different cadences —
  * the repricer re-runs only the probe and touches nothing else.
  */
-const REPRICE_MS = Number(process.env.WATCH_REPRICE_MS ?? 15_000);
-const REPRICE_BATCH = Number(process.env.WATCH_REPRICE_BATCH ?? 6);
+const REPRICE_MS = Number(process.env.WATCH_REPRICE_MS ?? 4_000);
+const REPRICE_BATCH = Number(process.env.WATCH_REPRICE_BATCH ?? 10);
+const REPRICE_CONCURRENCY = Number(process.env.WATCH_REPRICE_CONCURRENCY ?? 4);
 
 /** Cap the catch-up window so a long outage does not stall the watcher. */
 const MAX_CATCHUP_BLOCKS = 20_000n;
@@ -64,8 +76,11 @@ interface QueueItem {
 
 class Watcher {
   private readonly rpc: ArcRpc;
+  private readonly priceRpc: ArcRpc;
+  private repricing = false;
   private readonly db: Db;
   private readonly oracle: Oracle;
+  private readonly priceOracle: Oracle;
   private readonly queue: QueueItem[] = [];
   private readonly seen = new Set<string>();
   private active = 0;
@@ -75,11 +90,29 @@ class Watcher {
   private stopping = false;
 
   constructor() {
-    this.rpc = new ArcRpc({
-      url: process.env.ARC_RPC_URL ?? 'https://rpc.mainnet.arc.io',
-      minIntervalMs: 150,
-    });
+    const url = process.env.ARC_RPC_URL ?? 'https://rpc.mainnet.arc.io';
+    this.rpc = new ArcRpc({ url, minIntervalMs: 150 });
+
+    // A SEPARATE client for repricing. ArcRpc serialises its calls to respect
+    // Arc's undocumented rate limit, so sharing one queue meant every reprice
+    // waited behind discovery and assay work — 40 of 56 tokens were going more
+    // than ten minutes without a refresh. Two queues run concurrently while
+    // each stays individually polite.
+    this.priceRpc = new ArcRpc({ url, minIntervalMs: 150 });
     this.db = new Db(process.env.DATABASE_PATH ?? defaultDbPath());
+    this.priceOracle = new Oracle(this.priceRpc, {
+      ...(process.env.FINENESS_ADDRESS
+        ? { finenessAddress: process.env.FINENESS_ADDRESS }
+        : {
+            artifacts: {
+              fineness: new URL('../../contracts/out/Fineness.sol/Fineness.json', import.meta.url),
+              simulator: new URL(
+                '../../contracts/out/Simulator.sol/Simulator.json',
+                import.meta.url,
+              ),
+            },
+          }),
+    });
     this.oracle = new Oracle(this.rpc, {
       ...(process.env.FINENESS_ADDRESS
         ? { finenessAddress: process.env.FINENESS_ADDRESS }
@@ -151,6 +184,11 @@ class Watcher {
     const pools = await discoverPools(this.rpc, cursor + 1n, to);
     this.db.setCursor(CURSOR_KEY, to);
 
+    // Tally trading activity over the same range. One scan covers every pool,
+    // so this costs a single extra request per tick regardless of how many
+    // tokens are being tracked.
+    await this.recordSwaps(cursor + 1n, to);
+
     let queued = 0;
     for (const p of pools) {
       this.db.upsertPool(p);
@@ -180,6 +218,40 @@ class Watcher {
     }
 
     this.pump();
+  }
+
+  /**
+   * Count Swap events per pool and attribute them to tokens.
+   *
+   * Activity is the signal that survives on a chain where almost nothing
+   * trades: a token with swaps is alive whichever way the price went, and a
+   * flat token with no swaps is simply nobody's problem yet.
+   */
+  private async recordSwaps(from: bigint, to: bigint): Promise<void> {
+    let logs;
+    try {
+      logs = await scanLogs(this.rpc, {
+        address: V4_POOL_MANAGER,
+        topics: [SWAP_TOPIC],
+        fromBlock: from,
+        toBlock: to,
+      });
+    } catch {
+      return; // Activity is enrichment; never let it stall discovery.
+    }
+
+    const perPool = new Map<string, number>();
+    for (const l of logs) {
+      const id = l.topics[1];
+      if (id) perPool.set(id, (perPool.get(id) ?? 0) + 1);
+    }
+    if (perPool.size === 0) return;
+
+    const now = Date.now();
+    for (const [poolId, n] of perPool) {
+      const token = this.db.tokenForPool(poolId);
+      if (token) this.db.recordActivity(token, n, now);
+    }
   }
 
   /** Start work up to the concurrency limit. */
@@ -305,19 +377,41 @@ class Watcher {
    * re-assaying the whole table.
    */
   private async reprice(): Promise<void> {
-    this.db.prunePriceHistory();
-    const targets = this.db.stalestPriced(REPRICE_BATCH);
-    for (const t of targets) {
-      const pool = this.db.getPoolByToken(t.token);
-      if (!pool?.token) continue;
-      try {
-        const r = await this.oracle.check(pool);
-        this.db.updatePrice(t.token, await this.priceOf(pool, r.usdcProbed, r.tokensOut));
-      } catch {
-        // Stamp the attempt so a permanently unpriceable token does not jam
-        // the rotation at the front of the queue forever.
-        this.db.updatePrice(t.token, null);
-      }
+    if (this.repricing) return; // never let passes overlap and pile up
+    this.repricing = true;
+    try {
+      this.db.prunePriceHistory();
+      const targets = this.db.repriceTargets(REPRICE_BATCH);
+
+      // Small worker pool so a batch completes in roughly one call's time
+      // instead of ten sequential ones.
+      const queue = [...targets];
+      const workers = Array.from({ length: REPRICE_CONCURRENCY }, async () => {
+        for (;;) {
+          const t = queue.shift();
+          if (!t) return;
+          const pool = this.db.getPoolByToken(t.token);
+          if (!pool?.token) continue;
+          try {
+            const r = await this.priceOracle.check(pool);
+            const supply = await this.priceRpc.call<string>('eth_call', [
+              { to: pool.token, data: '0x18160ddd' },
+              'latest',
+            ]);
+            this.db.updatePrice(
+              t.token,
+              marketCapUsd(r.usdcProbed, r.tokensOut, BigInt(supply)),
+            );
+          } catch {
+            // Stamp the attempt so a permanently unpriceable token does not jam
+            // the rotation at the front of the queue forever.
+            this.db.updatePrice(t.token, null);
+          }
+        }
+      });
+      await Promise.all(workers);
+    } finally {
+      this.repricing = false;
     }
   }
 }

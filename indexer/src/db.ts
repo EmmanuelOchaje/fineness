@@ -125,6 +125,24 @@ export class Db {
       );
       CREATE INDEX IF NOT EXISTS idx_price_token_at ON price_history(token, at DESC);
 
+      /**
+       * Trading activity per token, bucketed per scan.
+       *
+       * Price change alone is a poor liveness signal here: 25 of 29 sampled
+       * tokens were perfectly flat, because nothing was trading them at all.
+       * And when price DOES move on a barely-funded pool it moves absurdly —
+       * one sample showed +127,770%, which is a liquidity artefact, not a rally.
+       *
+       * Swap count is the honest measure of "something is happening". It cannot
+       * be faked by thin liquidity and it does not care about direction.
+       */
+      CREATE TABLE IF NOT EXISTS activity (
+        token   TEXT NOT NULL,
+        swaps   INTEGER NOT NULL,
+        at      INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_token_at ON activity(token, at DESC);
+
       CREATE TABLE IF NOT EXISTS cursor (
         key              TEXT PRIMARY KEY,
         block            INTEGER NOT NULL
@@ -188,6 +206,14 @@ export class Db {
       )
       .all(limit) as Record<string, never>[];
     return rows.map((r) => this.rowToPool(r));
+  }
+
+  /** Token for a pool id, for attributing swap activity. */
+  tokenForPool(poolId: string): string | null {
+    const r = this.db
+      .prepare(`SELECT token FROM pools WHERE pool_id = ?`)
+      .get(poolId) as { token: string | null } | undefined;
+    return r?.token ?? null;
   }
 
   getPoolByToken(token: string): DiscoveredPool | null {
@@ -303,18 +329,31 @@ export class Db {
   }
 
   /**
-   * Tokens whose price is most stale, for the repricer.
+   * What to reprice next, most important first.
    *
-   * Ordered by when they were last PRICED, not last assayed — a market cap
-   * frozen at discovery is worse than no market cap, because it looks live.
+   * Ordered by recent trading activity, then by staleness. Repricing on pure
+   * staleness spends the entire RPC budget on dead tokens: on Arc most tokens
+   * never trade, so their market cap is correctly constant and refreshing it
+   * every few seconds buys nothing. The handful that ARE trading are the only
+   * ones whose number is actually moving, and they are what a live feed is for.
    */
-  stalestPriced(limit = 10): { token: string; poolId: string }[] {
+  repriceTargets(limit = 10, activityWindowMs = 15 * 60 * 1000): {
+    token: string;
+    poolId: string;
+  }[] {
     return this.db
       .prepare(
-        `SELECT token, pool_id AS poolId FROM reports
-         ORDER BY COALESCE(priced_at, checked_at) ASC LIMIT ?`,
+        `SELECT r.token, r.pool_id AS poolId,
+                COALESCE((SELECT SUM(a.swaps) FROM activity a
+                          WHERE a.token = r.token AND a.at >= ?), 0) AS act
+         FROM reports r
+         ORDER BY act DESC, COALESCE(r.priced_at, r.checked_at) ASC
+         LIMIT ?`,
       )
-      .all(limit) as { token: string; poolId: string }[];
+      .all(Date.now() - activityWindowMs, limit) as {
+      token: string;
+      poolId: string;
+    }[];
   }
 
   /** Update just the price fields, leaving the verdict untouched. */
@@ -355,9 +394,26 @@ export class Db {
     return ((cur.c - row.old) / row.old) * 100;
   }
 
+  recordActivity(token: string, swaps: number, at = Date.now()): void {
+    if (swaps <= 0) return;
+    this.db
+      .prepare(`INSERT INTO activity (token, swaps, at) VALUES (?,?,?)`)
+      .run(token.toLowerCase(), swaps, at);
+  }
+
+  /** Swaps seen for a token within the window. */
+  swapsIn(token: string, windowMs: number): number {
+    const r = this.db
+      .prepare(`SELECT COALESCE(SUM(swaps),0) AS n FROM activity WHERE token = ? AND at >= ?`)
+      .get(token.toLowerCase(), Date.now() - windowMs) as { n: number } | undefined;
+    return r?.n ?? 0;
+  }
+
   /** Keep the history bounded; this is a live feed, not an archive. */
   prunePriceHistory(olderThanMs = 6 * 60 * 60 * 1000): void {
-    this.db.prepare(`DELETE FROM price_history WHERE at < ?`).run(Date.now() - olderThanMs);
+    const cutoff = Date.now() - olderThanMs;
+    this.db.prepare(`DELETE FROM price_history WHERE at < ?`).run(cutoff);
+    this.db.prepare(`DELETE FROM activity WHERE at < ?`).run(cutoff);
   }
 
   /** Most recent assay timestamp, for change detection on the stream. */

@@ -32,7 +32,9 @@ export interface FeedRow {
   grade: number;
   /** null = not enough history yet. Never render as 0%. */
   changePct: number | null;
-  surging: boolean;
+  active: boolean;
+  swaps: number;
+  direction: 'up' | 'down' | 'flat' | null;
   /** First time we assayed it — what makes a resurfaced row "not new". */
   firstSeen: number;
   score: number;
@@ -47,7 +49,7 @@ export interface FeedRow {
 
 type Conn = 'live' | 'retrying' | 'static';
 
-const GRID = '76px 30px minmax(0, 1.4fr) 132px 92px 96px 88px 84px';
+const GRID = '76px 30px minmax(0, 1.35fr) 130px 86px 64px 88px 84px 84px';
 
 /** Market-cap floors. "Any" is first and is the default — see the note below. */
 const FLOORS = [
@@ -124,10 +126,10 @@ export function LiveFeed({
   // is gone for good — including the one that has since tripled. Resurfacing it
   // is the difference between a decision deferred and a decision lost.
   const visible = [...filtered].sort((a, b) => {
-    if (a.surging !== b.surging) return a.surging ? -1 : 1;
+    if (a.active !== b.active) return a.active ? -1 : 1;
     return 0;
   });
-  const surgeCount = filtered.filter((r) => r.surging).length;
+  const activeCount = filtered.filter((r) => r.active).length;
 
   return (
     <>
@@ -153,9 +155,9 @@ export function LiveFeed({
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {surgeCount > 0 && (
+            {activeCount > 0 && (
               <span className="mono" style={{ fontSize: 9.5, letterSpacing: '0.16em', color: 'var(--pass)' }}>
-                ↻ {surgeCount} RETURNING
+                ↻ {activeCount} ACTIVE AGAIN
               </span>
             )}
             <ConnBadge conn={conn} />
@@ -207,6 +209,7 @@ export function LiveFeed({
             <div>Token</div>
             <div style={{ textAlign: 'right' }}>Market cap</div>
             <div style={{ textAlign: 'right' }}>15m</div>
+            <div style={{ textAlign: 'right' }}>Swaps</div>
             <div style={{ textAlign: 'right' }}>Exit cost</div>
             <div style={{ textAlign: 'right' }}>Priced</div>
             <div style={{ textAlign: 'right' }}>Verdict</div>
@@ -230,8 +233,8 @@ export function LiveFeed({
                   // Two different reasons a row deserves attention, two
                   // different rules. Surging wins, because it is the one you
                   // may already have dismissed once.
-                  boxShadow: r.surging
-                    ? 'inset 2px 0 0 var(--pass)'
+                  boxShadow: r.active
+                    ? `inset 2px 0 0 ${r.direction === 'down' ? 'var(--early)' : 'var(--pass)'}`
                     : isNew
                       ? 'inset 2px 0 0 var(--early)'
                       : undefined,
@@ -262,7 +265,7 @@ export function LiveFeed({
                       {r.name}
                     </span>
                   )}
-                  {r.surging ? (
+                  {r.active ? (
                     // Explicitly "again", not "new". The whole point of
                     // resurfacing is that you have probably seen this token
                     // before and passed on it — saying NEW here would be a lie
@@ -272,12 +275,13 @@ export function LiveFeed({
                       style={{
                         fontSize: 9,
                         letterSpacing: '0.18em',
-                        color: 'var(--pass)',
+                        color: r.direction === 'down' ? 'var(--early)' : 'var(--pass)',
                         flex: 'none',
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      ↻ AGAIN · SEEN {since(r.firstSeen)} AGO
+                      ↻ AGAIN · {seenPhrase(r.firstSeen)}
+                      {r.direction === 'up' ? ' ▲' : r.direction === 'down' ? ' ▼' : ''}
                     </span>
                   ) : isNew ? (
                     <span
@@ -326,6 +330,20 @@ export function LiveFeed({
                     : `${r.changePct > 0 ? '+' : ''}${r.changePct.toFixed(1)}%`}
                 </div>
 
+                {/* Swaps in the window. A flat market cap with zero swaps is
+                    not a stale reading — it is an untraded token, and showing
+                    the count is what makes that legible rather than broken. */}
+                <div
+                  className="mono"
+                  style={{
+                    textAlign: 'right',
+                    fontSize: 13,
+                    color: r.swaps > 0 ? 'var(--dim)' : 'var(--faint)',
+                  }}
+                >
+                  {r.swaps > 0 ? r.swaps : '·'}
+                </div>
+
                 {/* Round-trip cost: what it takes to get in and back out.
                     Coloured, because it now drives the mark. */}
                 <div
@@ -368,8 +386,8 @@ export function LiveFeed({
 
           <div className="label" style={{ padding: '14px 22px', color: 'var(--faint)' }}>
             {visible.length} assayed
-            {surgeCount > 0 &&
-              ` · ${surgeCount} returning after a 15m surge — previously seen, not new`}
+            {activeCount > 0 &&
+              ` · ${activeCount} returning on 15m price action — previously seen, not new`}
             {floor > 0 && ' · unpriced tokens included'}
           </div>
         </section>
@@ -519,6 +537,19 @@ function TokenLogo({ src, symbol }: { src: string | null; symbol: string | null 
       />
     </div>
   );
+}
+
+/**
+ * How long this token has been in the feed.
+ *
+ * Reads as a reminder that you have met it before, which is the entire point of
+ * resurfacing — so it never says "seen just now ago", and a token first seen
+ * moments ago is simply active rather than returning.
+ */
+function seenPhrase(firstSeen: number): string {
+  const m = Math.round((Date.now() - firstSeen) / 60_000);
+  if (m < 2) return 'JUST LISTED';
+  return `SEEN ${since(firstSeen)} AGO`;
 }
 
 function since(ts: number): string {

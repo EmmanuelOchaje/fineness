@@ -27,8 +27,22 @@ const FEED_SIZE = 100;
  * token that has moved more than this over the window is resurfaced into the
  * feed regardless of how old it is, so a deferred decision is not a lost one.
  */
-const SURGE_WINDOW_MS = Number(process.env.SURGE_WINDOW_MS ?? 15 * 60 * 1000);
-const SURGE_PCT = Number(process.env.SURGE_PCT ?? 25);
+const ACTIVITY_WINDOW_MS = Number(process.env.ACTIVITY_WINDOW_MS ?? 15 * 60 * 1000);
+
+/**
+ * What counts as "worth another look".
+ *
+ * Measured on Arc: 25 of 29 sampled tokens were perfectly flat, because nothing
+ * traded them at all. So the bar is deliberately low and bidirectional — a 6%
+ * drop is as much information as a 6% rise, and on a chain this quiet any real
+ * movement already puts a token in the top tenth.
+ *
+ * Swap count is the more honest trigger. It cannot be manufactured by thin
+ * liquidity, whereas price on a barely-funded pool produces nonsense — one
+ * sample here read +127,770%, which was a pool getting funded, not a rally.
+ */
+const MOVE_PCT = Number(process.env.MOVE_PCT ?? 5);
+const MIN_SWAPS = Number(process.env.MIN_SWAPS ?? 3);
 const PORT = Number(process.env.PORT ?? 8080);
 
 const db = new Db(process.env.DATABASE_PATH ?? defaultDbPath());
@@ -101,7 +115,10 @@ app.get<{ Querystring: { limit?: string; minScore?: string; minMcap?: string } }
 function row(r: import('../../indexer/src/db.js').StoredReport) {
   // null means not enough history yet — never rendered as 0%, because a token
   // we have only just met has not been flat, it has been unobserved.
-  const change = db.priceChangePct(r.token, SURGE_WINDOW_MS);
+  const change = db.priceChangePct(r.token, ACTIVITY_WINDOW_MS);
+  const swaps = db.swapsIn(r.token, ACTIVITY_WINDOW_MS);
+  const moved = change !== null && Math.abs(change) >= MOVE_PCT;
+  const traded = swaps >= MIN_SWAPS;
   return {
     token: r.token,
     name: r.name ?? null,
@@ -110,7 +127,11 @@ function row(r: import('../../indexer/src/db.js').StoredReport) {
     mark: mark(r.grade),
     grade: r.grade ?? 0,
     changePct: change,
-    surging: change !== null && change >= SURGE_PCT,
+    swaps,
+    // "Active", not "surging": direction is irrelevant to whether a token
+    // deserves a second look, and a token being traded at all is the signal.
+    active: moved || traded,
+    direction: change === null ? null : change > 0 ? 'up' : change < 0 ? 'down' : 'flat',
     // How long this token has been in the feed. A surging row is one you have
     // most likely already scrolled past once, so it must announce itself as
     // returning rather than new — otherwise it reads as a fresh launch.
@@ -244,7 +265,8 @@ app.get<{ Params: { address: string } }>('/tokens/:address', async (req, reply) 
     marketCap: cached!.marketCap ?? null,
     mark: mark(cached!.grade),
     grade: cached!.grade ?? 0,
-    changePct: db.priceChangePct(address, SURGE_WINDOW_MS),
+    changePct: db.priceChangePct(address, ACTIVITY_WINDOW_MS),
+    swaps: db.swapsIn(address, ACTIVITY_WINDOW_MS),
 
     // Everything under here is deterministic and provable on-chain.
     verified: {
